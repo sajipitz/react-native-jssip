@@ -1,6 +1,7 @@
 # React-Native JsSIP fork
-
+* Fixes Hold & Mute issues - `react-native-webrtc` doesnt support latest `RTCPeerConnection::getSenders function`.  
 * Handles the obsolete WebRTC `MediaStream.addStream function` that is still used within React Native WebRTC Plugin
+* Send DTMF only supports INFO based transport.
 
 Confirmed Compatible with minimum versions:  
 
