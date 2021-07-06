@@ -9,7 +9,7 @@
     "José Luis Millán <jmillan@aliax.net> (https://github.com/jmillan)"
   ],
   "types": "lib/JsSIP.d.ts",
-  "main": "lib-es5/JsSIP.js",
+  "main": "lib/JsSIP.js",
   "keywords": [
     "react-native",
     "sip",
