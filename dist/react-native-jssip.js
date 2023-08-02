@@ -1,7 +1,7 @@
 /*
  * React Native JsSIP v3.7.6
  * React Native fork of the Javascript SIP library
- * Copyright: 2012-2021 Radu Vulpescu <radu.vulpescu@gmail.com> (https://github.com/rvulpescu)
+ * Copyright: 2012-2023 Radu Vulpescu <radu.vulpescu@gmail.com> (https://github.com/rvulpescu)
  * Homepage: https://github.com/rvulpescu/react-native-jssip#readme
  * License: MIT
  */
@@ -23197,6 +23197,7 @@ module.exports = class WebSocketInterface
   _onError(e)
   {
     debugerror(`WebSocket ${this._url} error: ${e}`);
+    console.log('WebsocketError:', e);
   }
 };
 
@@ -24303,7 +24304,7 @@ function setup(env) {
 
 	/**
 	* Selects a color for a debug namespace
-	* @param {String} namespace The namespace string for the for the debug instance to be colored
+	* @param {String} namespace The namespace string for the debug instance to be colored
 	* @return {Number|String} An ANSI color code for the given namespace
 	* @api private
 	*/
@@ -24448,7 +24449,7 @@ function setup(env) {
 			namespaces = split[i].replace(/\*/g, '.*?');
 
 			if (namespaces[0] === '-') {
-				createDebug.skips.push(new RegExp('^' + namespaces.substr(1) + '$'));
+				createDebug.skips.push(new RegExp('^' + namespaces.slice(1) + '$'));
 			} else {
 				createDebug.names.push(new RegExp('^' + namespaces + '$'));
 			}
