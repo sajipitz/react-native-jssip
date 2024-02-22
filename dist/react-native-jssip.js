@@ -26196,12 +26196,11 @@ module.exports={
     "url": "git+https://github.com/rvulpescu/react-native-jssip.git"
   },
   "dependencies": {
-    "@types/events": "^3.0.0",
     "@types/debug": "^4.1.7",
+    "@types/events": "^3.0.0",
     "debug": "^4.3.1",
     "events": "^3.3.0",
-    "react-native": "^0.63.3",
-    "react-native-webrtc": "^1.84.0",
+    "react-native": "^0.73.4",
     "sdp-transform": "^2.14.1"
   },
   "devDependencies": {
@@ -26228,6 +26227,7 @@ module.exports={
     "lint": "node npm-scripts.js lint",
     "test": "node npm-scripts.js test",
     "prepublish": "node npm-scripts.js prepublish",
+    "build": "gulp",
     "release": "node npm-scripts.js release"
   }
 }
