@@ -1,8 +1,8 @@
 /*
- * React Native JsSIP v3.7.6
+ * React Native JsSIP v3.10.1
  * React Native fork of the Javascript SIP library
- * Copyright: 2012-2021 Radu Vulpescu <radu.vulpescu@gmail.com> (https://github.com/rvulpescu)
- * Homepage: https://github.com/rvulpescu/react-native-jssip#readme
+ * Copyright: 2012-2024 Radu Vulpescu <radu.vulpescu@gmail.com> (https://github.com/rvulpescu)
+ * Homepage: 
  * License: MIT
  */
 
@@ -41,14 +41,18 @@ exports.settings = {
   no_answer_timeout              : 60,
 
   // Registration parameters.
-  register         : true,
-  register_expires : 600,
-  registrar_server : null,
+  register                : true,
+  register_expires        : 600,
+  register_from_tag_trail : '',
+  registrar_server        : null,
 
   // Connection options.
   sockets                          : null,
   connection_recovery_max_interval : JsSIP_C.CONNECTION_RECOVERY_MAX_INTERVAL,
   connection_recovery_min_interval : JsSIP_C.CONNECTION_RECOVERY_MIN_INTERVAL,
+
+  // Global extra headers, to be added to every request and response
+  extra_headers : null,
 
   /*
    * Host address.
@@ -288,6 +292,16 @@ const checks = {
       }
     },
 
+    register_from_tag_trail(register_from_tag_trail)
+    {
+      if (typeof register_from_tag_trail === 'function')
+      {
+        return register_from_tag_trail;
+      }
+
+      return String(register_from_tag_trail);
+    },
+
     registrar_server(registrar_server)
     {
       if (!/^sip:/i.test(registrar_server))
@@ -317,6 +331,28 @@ const checks = {
       {
         return use_preloaded_route;
       }
+    },
+
+    extra_headers(extra_headers)
+    {
+      const _extraHeaders = [];
+
+      if (Array.isArray(extra_headers) && extra_headers.length)
+      {
+        for (const header of extra_headers)
+        {
+          if (typeof header === 'string')
+          {
+            _extraHeaders.push(header);
+          }
+        }
+      }
+      else
+      {
+        return;
+      }
+
+      return _extraHeaders;
     }
   }
 };
@@ -375,7 +411,7 @@ exports.load = (dst, src) =>
   }
 };
 
-},{"./Constants":2,"./Exceptions":6,"./Grammar":7,"./Socket":20,"./URI":25,"./Utils":26}],2:[function(require,module,exports){
+},{"./Constants":2,"./Exceptions":6,"./Grammar":7,"./Socket":22,"./URI":27,"./Utils":28}],2:[function(require,module,exports){
 const pkg = require('../package.json');
 
 module.exports = {
@@ -536,18 +572,21 @@ module.exports = {
   CONNECTION_RECOVERY_MIN_INTERVAL : 2
 };
 
-},{"../package.json":38}],3:[function(require,module,exports){
+},{"../package.json":40}],3:[function(require,module,exports){
+const Logger = require('./Logger');
 const SIPMessage = require('./SIPMessage');
 const JsSIP_C = require('./Constants');
 const Transactions = require('./Transactions');
 const Dialog_RequestSender = require('./Dialog/RequestSender');
 const Utils = require('./Utils');
-const debug = require('debug')('JsSIP:Dialog');
+
+const logger = new Logger('Dialog');
 
 const C = {
   // Dialog states.
-  STATUS_EARLY     : 1,
-  STATUS_CONFIRMED : 2
+  STATUS_EARLY      : 1,
+  STATUS_CONFIRMED  : 2,
+  STATUS_TERMINATED : 3
 };
 
 // RFC 3261 12.1.
@@ -624,7 +663,7 @@ module.exports = class Dialog
     }
 
     this._ua.newDialog(this);
-    debug(`new ${type} dialog created with status ${this._state === C.STATUS_EARLY ? 'EARLY': 'CONFIRMED'}`);
+    logger.debug(`new ${type} dialog created with status ${this._state === C.STATUS_EARLY ? 'EARLY': 'CONFIRMED'}`);
   }
 
   get id()
@@ -662,11 +701,16 @@ module.exports = class Dialog
     return this._uas_pending_reply;
   }
 
+  isTerminated()
+  {
+    return this._status === C.STATUS_TERMINATED;
+  }
+
   update(message, type)
   {
     this._state = C.STATUS_CONFIRMED;
 
-    debug(`dialog ${this._id.toString()}  changed to CONFIRMED state`);
+    logger.debug(`dialog ${this._id.toString()}  changed to CONFIRMED state`);
 
     if (type === 'UAC')
     {
@@ -677,8 +721,10 @@ module.exports = class Dialog
 
   terminate()
   {
-    debug(`dialog ${this._id.toString()} deleted`);
+    logger.debug(`dialog ${this._id.toString()} deleted`);
+
     this._ua.destroyDialog(this);
+    this._state = C.STATUS_TERMINATED;
   }
 
   sendRequest(method, options = {})
@@ -848,10 +894,9 @@ module.exports = class Dialog
   }
 };
 
-},{"./Constants":2,"./Dialog/RequestSender":4,"./SIPMessage":19,"./Transactions":22,"./Utils":26,"debug":30}],4:[function(require,module,exports){
+},{"./Constants":2,"./Dialog/RequestSender":4,"./Logger":9,"./SIPMessage":21,"./Transactions":24,"./Utils":28}],4:[function(require,module,exports){
 const JsSIP_C = require('../Constants');
 const Transactions = require('../Transactions');
-const RTCSession = require('../RTCSession');
 const RequestSender = require('../RequestSender');
 
 // Default event handlers.
@@ -965,11 +1010,10 @@ module.exports = class DialogRequestSender
         this._request.cseq = this._dialog.local_seqnum += 1;
         this._reattemptTimer = setTimeout(() =>
         {
-          // TODO: look at dialog state instead.
-          if (this._dialog.owner.status !== RTCSession.C.STATUS_TERMINATED)
+          if (!this._dialog.isTerminated())
           {
             this._reattempt = true;
-            this._request_sender.send();
+            this.send();
           }
         }, 1000);
       }
@@ -985,12 +1029,11 @@ module.exports = class DialogRequestSender
   }
 };
 
-},{"../Constants":2,"../RTCSession":12,"../RequestSender":18,"../Transactions":22}],5:[function(require,module,exports){
+},{"../Constants":2,"../RequestSender":20,"../Transactions":24}],5:[function(require,module,exports){
+const Logger = require('./Logger');
 const Utils = require('./Utils');
-const debug = require('debug')('JsSIP:DigestAuthentication');
-const debugerror = require('debug')('JsSIP:ERROR:DigestAuthentication');
 
-debugerror.log = console.warn.bind(console);
+const logger = new Logger('DigestAuthentication');
 
 module.exports = class DigestAuthentication
 {
@@ -1023,7 +1066,7 @@ module.exports = class DigestAuthentication
         return this._ha1;
 
       default:
-        debugerror('get() | cannot get "%s" parameter', parameter);
+        logger.warn('get() | cannot get "%s" parameter', parameter);
 
         return undefined;
     }
@@ -1046,7 +1089,7 @@ module.exports = class DigestAuthentication
     {
       if (this._algorithm !== 'MD5')
       {
-        debugerror('authenticate() | challenge with Digest algorithm different than "MD5", authentication aborted');
+        logger.warn('authenticate() | challenge with Digest algorithm different than "MD5", authentication aborted');
 
         return false;
       }
@@ -1058,14 +1101,14 @@ module.exports = class DigestAuthentication
 
     if (!this._nonce)
     {
-      debugerror('authenticate() | challenge without Digest nonce, authentication aborted');
+      logger.warn('authenticate() | challenge without Digest nonce, authentication aborted');
 
       return false;
     }
 
     if (!this._realm)
     {
-      debugerror('authenticate() | challenge without Digest realm, authentication aborted');
+      logger.warn('authenticate() | challenge without Digest realm, authentication aborted');
 
       return false;
     }
@@ -1076,7 +1119,7 @@ module.exports = class DigestAuthentication
       // If ha1 is not provided we cannot authenticate.
       if (!this._credentials.ha1)
       {
-        debugerror('authenticate() | no plain SIP password nor ha1 provided, authentication aborted');
+        logger.warn('authenticate() | no plain SIP password nor ha1 provided, authentication aborted');
 
         return false;
       }
@@ -1084,7 +1127,7 @@ module.exports = class DigestAuthentication
       // If the realm does not match the stored realm we cannot authenticate.
       if (this._credentials.realm !== this._realm)
       {
-        debugerror('authenticate() | no plain SIP password, and stored `realm` does not match the given `realm`, cannot authenticate [stored:"%s", given:"%s"]', this._credentials.realm, this._realm);
+        logger.warn('authenticate() | no plain SIP password, and stored `realm` does not match the given `realm`, cannot authenticate [stored:"%s", given:"%s"]', this._credentials.realm, this._realm);
 
         return false;
       }
@@ -1104,7 +1147,7 @@ module.exports = class DigestAuthentication
       else
       {
         // Otherwise 'qop' is present but does not contain 'auth' or 'auth-int', so abort here.
-        debugerror('authenticate() | challenge without Digest qop different than "auth" or "auth-int", authentication aborted');
+        logger.warn('authenticate() | challenge without Digest qop different than "auth" or "auth-int", authentication aborted');
 
         return false;
       }
@@ -1154,7 +1197,7 @@ module.exports = class DigestAuthentication
       a2 = `${this._method}:${this._uri}`;
       ha2 = Utils.calculateMD5(a2);
 
-      debug('authenticate() | using qop=auth [a2:"%s"]', a2);
+      logger.debug('authenticate() | using qop=auth [a2:"%s"]', a2);
 
       // Response = MD5(HA1:nonce:nonceCount:credentialsNonce:qop:HA2).
       this._response = Utils.calculateMD5(`${this._ha1}:${this._nonce}:${this._ncHex}:${this._cnonce}:auth:${ha2}`);
@@ -1166,7 +1209,7 @@ module.exports = class DigestAuthentication
       a2 = `${this._method}:${this._uri}:${Utils.calculateMD5(body ? body : '')}`;
       ha2 = Utils.calculateMD5(a2);
 
-      debug('authenticate() | using qop=auth-int [a2:"%s"]', a2);
+      logger.debug('authenticate() | using qop=auth-int [a2:"%s"]', a2);
 
       // Response = MD5(HA1:nonce:nonceCount:credentialsNonce:qop:HA2).
       this._response = Utils.calculateMD5(`${this._ha1}:${this._nonce}:${this._ncHex}:${this._cnonce}:auth-int:${ha2}`);
@@ -1178,13 +1221,13 @@ module.exports = class DigestAuthentication
       a2 = `${this._method}:${this._uri}`;
       ha2 = Utils.calculateMD5(a2);
 
-      debug('authenticate() | using qop=null [a2:"%s"]', a2);
+      logger.debug('authenticate() | using qop=null [a2:"%s"]', a2);
 
       // Response = MD5(HA1:nonce:HA2).
       this._response = Utils.calculateMD5(`${this._ha1}:${this._nonce}:${ha2}`);
     }
 
-    debug('authenticate() | response generated');
+    logger.debug('authenticate() | response generated');
 
     return true;
   }
@@ -1222,7 +1265,7 @@ module.exports = class DigestAuthentication
   }
 };
 
-},{"./Utils":26,"debug":30}],6:[function(require,module,exports){
+},{"./Logger":9,"./Utils":28}],6:[function(require,module,exports){
 class ConfigurationError extends Error
 {
   constructor(parameter, value)
@@ -13561,7 +13604,7 @@ module.exports = (function(){
   result.SyntaxError.prototype = Error.prototype;
   return result;
 })();
-},{"./NameAddrHeader":10,"./URI":25}],8:[function(require,module,exports){
+},{"./NameAddrHeader":11,"./URI":27}],8:[function(require,module,exports){
 const pkg = require('../package.json');
 const C = require('./Constants');
 const Exceptions = require('./Exceptions');
@@ -13593,14 +13636,61 @@ module.exports = {
   get version() { return pkg.version; }
 };
 
-},{"../package.json":38,"./Constants":2,"./Exceptions":6,"./Grammar":7,"./NameAddrHeader":10,"./UA":24,"./URI":25,"./Utils":26,"./WebSocketInterface":27,"debug":30}],9:[function(require,module,exports){
+},{"../package.json":40,"./Constants":2,"./Exceptions":6,"./Grammar":7,"./NameAddrHeader":11,"./UA":26,"./URI":27,"./Utils":28,"./WebSocketInterface":29,"debug":32}],9:[function(require,module,exports){
+const debug = require('debug');
+
+const APP_NAME = 'JsSIP';
+
+module.exports = class Logger
+{
+  constructor(prefix)
+  {
+    if (prefix)
+    {
+      this._debug = debug.default(`${APP_NAME}:${prefix}`);
+      this._warn = debug.default(`${APP_NAME}:WARN:${prefix}`);
+      this._error = debug.default(`${APP_NAME}:ERROR:${prefix}`);
+    }
+    else
+    {
+      this._debug = debug.default(APP_NAME);
+      this._warn = debug.default(`${APP_NAME}:WARN`);
+      this._error = debug.default(`${APP_NAME}:ERROR`);
+    }
+    /* eslint-disable no-console */
+    this._debug.log = console.info.bind(console);
+    this._warn.log = console.warn.bind(console);
+    this._error.log = console.error.bind(console);
+    /* eslint-enable no-console */
+  }
+
+  get debug()
+  {
+    return this._debug;
+  }
+
+  get warn()
+  {
+    return this._warn;
+  }
+
+  get error()
+  {
+    return this._error;
+  }
+};
+
+},{"debug":32}],10:[function(require,module,exports){
 const EventEmitter = require('events').EventEmitter;
+const Logger = require('./Logger');
 const JsSIP_C = require('./Constants');
 const SIPMessage = require('./SIPMessage');
 const Utils = require('./Utils');
 const RequestSender = require('./RequestSender');
 const Exceptions = require('./Exceptions');
-const debug = require('debug')('JsSIP:Message');
+const URI = require('./URI');
+
+const logger = new Logger('Message');
 
 module.exports = class Message extends EventEmitter
 {
@@ -13659,6 +13749,20 @@ module.exports = class Message extends EventEmitter
     const eventHandlers = Utils.cloneObject(options.eventHandlers);
     const contentType = options.contentType || 'text/plain';
 
+    const requestParams = {};
+
+    if (options.fromUserName)
+    {
+      requestParams.from_uri = new URI('sip', options.fromUserName, this._ua.configuration.uri.host);
+
+      extraHeaders.push(`P-Preferred-Identity: ${this._ua.configuration.uri.toString()}`);
+    }
+
+    if (options.fromDisplayName)
+    {
+      requestParams.from_display_name = options.fromDisplayName;
+    }
+
     // Set event handlers.
     for (const event in eventHandlers)
     {
@@ -13671,7 +13775,7 @@ module.exports = class Message extends EventEmitter
     extraHeaders.push(`Content-Type: ${contentType}`);
 
     this._request = new SIPMessage.OutgoingRequest(
-      JsSIP_C.MESSAGE, target, this._ua, null, extraHeaders);
+      JsSIP_C.MESSAGE, target, this._ua, requestParams, extraHeaders);
 
     if (body)
     {
@@ -13845,11 +13949,11 @@ module.exports = class Message extends EventEmitter
 
   _failed(originator, response, cause)
   {
-    debug('MESSAGE failed');
+    logger.debug('MESSAGE failed');
 
     this._close();
 
-    debug('emit "failed"');
+    logger.debug('emit "failed"');
 
     this.emit('failed', {
       originator,
@@ -13860,11 +13964,11 @@ module.exports = class Message extends EventEmitter
 
   _succeeded(originator, response)
   {
-    debug('MESSAGE succeeded');
+    logger.debug('MESSAGE succeeded');
 
     this._close();
 
-    debug('emit "succeeded"');
+    logger.debug('emit "succeeded"');
 
     this.emit('succeeded', {
       originator,
@@ -13873,7 +13977,7 @@ module.exports = class Message extends EventEmitter
   }
 };
 
-},{"./Constants":2,"./Exceptions":6,"./RequestSender":18,"./SIPMessage":19,"./Utils":26,"debug":30,"events":29}],10:[function(require,module,exports){
+},{"./Constants":2,"./Exceptions":6,"./Logger":9,"./RequestSender":20,"./SIPMessage":21,"./URI":27,"./Utils":28,"events":31}],11:[function(require,module,exports){
 const URI = require('./URI');
 const Grammar = require('./Grammar');
 
@@ -14014,12 +14118,294 @@ module.exports = class NameAddrHeader
   }
 };
 
-},{"./Grammar":7,"./URI":25}],11:[function(require,module,exports){
+},{"./Grammar":7,"./URI":27}],12:[function(require,module,exports){
+const EventEmitter = require('events').EventEmitter;
+const Logger = require('./Logger');
+const JsSIP_C = require('./Constants');
+const SIPMessage = require('./SIPMessage');
+const Utils = require('./Utils');
+const RequestSender = require('./RequestSender');
+const Exceptions = require('./Exceptions');
+
+const logger = new Logger('Options');
+
+module.exports = class Options extends EventEmitter
+{
+  constructor(ua)
+  {
+    super();
+
+    this._ua = ua;
+    this._request = null;
+    this._closed = false;
+
+    this._direction = null;
+    this._local_identity = null;
+    this._remote_identity = null;
+
+    // Whether an incoming message has been replied.
+    this._is_replied = false;
+
+    // Custom message empty object for high level use.
+    this._data = {};
+  }
+
+  get direction()
+  {
+    return this._direction;
+  }
+
+  get local_identity()
+  {
+    return this._local_identity;
+  }
+
+  get remote_identity()
+  {
+    return this._remote_identity;
+  }
+
+  send(target, body, options = {})
+  {
+    const originalTarget = target;
+
+    if (target === undefined)
+    {
+      throw new TypeError('A target is required for OPTIONS');
+    }
+
+    // Check target validity.
+    target = this._ua.normalizeTarget(target);
+    if (!target)
+    {
+      throw new TypeError(`Invalid target: ${originalTarget}`);
+    }
+
+    // Get call options.
+    const extraHeaders = Utils.cloneArray(options.extraHeaders);
+    const eventHandlers = Utils.cloneObject(options.eventHandlers);
+    const contentType = options.contentType || 'application/sdp';
+
+    // Set event handlers.
+    for (const event in eventHandlers)
+    {
+      if (Object.prototype.hasOwnProperty.call(eventHandlers, event))
+      {
+        this.on(event, eventHandlers[event]);
+      }
+    }
+
+    extraHeaders.push(`Content-Type: ${contentType}`);
+
+    this._request = new SIPMessage.OutgoingRequest(
+      JsSIP_C.OPTIONS, target, this._ua, null, extraHeaders);
+
+    if (body)
+    {
+      this._request.body = body;
+    }
+
+    const request_sender = new RequestSender(this._ua, this._request, {
+      onRequestTimeout : () =>
+      {
+        this._onRequestTimeout();
+      },
+      onTransportError : () =>
+      {
+        this._onTransportError();
+      },
+      onReceiveResponse : (response) =>
+      {
+        this._receiveResponse(response);
+      }
+    });
+
+    this._newOptions('local', this._request);
+
+    request_sender.send();
+  }
+
+  init_incoming(request)
+  {
+    this._request = request;
+
+    this._newOptions('remote', request);
+
+    // Reply with a 200 OK if the user didn't reply.
+    if (!this._is_replied)
+    {
+      this._is_replied = true;
+      request.reply(200);
+    }
+
+    this._close();
+  }
+
+  /**
+   * Accept the incoming Options
+   * Only valid for incoming Options
+   */
+  accept(options = {})
+  {
+    const extraHeaders = Utils.cloneArray(options.extraHeaders);
+    const body = options.body;
+
+    if (this._direction !== 'incoming')
+    {
+      throw new Exceptions.NotSupportedError('"accept" not supported for outgoing Options');
+    }
+
+    if (this._is_replied)
+    {
+      throw new Error('incoming Options already replied');
+    }
+
+    this._is_replied = true;
+    this._request.reply(200, null, extraHeaders, body);
+  }
+
+  /**
+   * Reject the incoming Options
+   * Only valid for incoming Options
+   */
+  reject(options = {})
+  {
+    const status_code = options.status_code || 480;
+    const reason_phrase = options.reason_phrase;
+    const extraHeaders = Utils.cloneArray(options.extraHeaders);
+    const body = options.body;
+
+    if (this._direction !== 'incoming')
+    {
+      throw new Exceptions.NotSupportedError('"reject" not supported for outgoing Options');
+    }
+
+    if (this._is_replied)
+    {
+      throw new Error('incoming Options already replied');
+    }
+
+    if (status_code < 300 || status_code >= 700)
+    {
+      throw new TypeError(`Invalid status_code: ${status_code}`);
+    }
+
+    this._is_replied = true;
+    this._request.reply(status_code, reason_phrase, extraHeaders, body);
+  }
+
+  _receiveResponse(response)
+  {
+    if (this._closed)
+    {
+      return;
+    }
+    switch (true)
+    {
+      case /^1[0-9]{2}$/.test(response.status_code):
+        // Ignore provisional responses.
+        break;
+
+      case /^2[0-9]{2}$/.test(response.status_code):
+        this._succeeded('remote', response);
+        break;
+
+      default:
+      {
+        const cause = Utils.sipErrorCause(response.status_code);
+
+        this._failed('remote', response, cause);
+        break;
+      }
+    }
+  }
+
+  _onRequestTimeout()
+  {
+    if (this._closed)
+    {
+      return;
+    }
+    this._failed('system', null, JsSIP_C.causes.REQUEST_TIMEOUT);
+  }
+
+  _onTransportError()
+  {
+    if (this._closed)
+    {
+      return;
+    }
+    this._failed('system', null, JsSIP_C.causes.CONNECTION_ERROR);
+  }
+
+  _close()
+  {
+    this._closed = true;
+    this._ua.destroyMessage(this);
+  }
+
+  /**
+   * Internal Callbacks
+   */
+
+  _newOptions(originator, request)
+  {
+    if (originator === 'remote')
+    {
+      this._direction = 'incoming';
+      this._local_identity = request.to;
+      this._remote_identity = request.from;
+    }
+    else if (originator === 'local')
+    {
+      this._direction = 'outgoing';
+      this._local_identity = request.from;
+      this._remote_identity = request.to;
+    }
+
+    this._ua.newOptions(this, {
+      originator,
+      message : this,
+      request
+    });
+  }
+
+  _failed(originator, response, cause)
+  {
+    logger.debug('OPTIONS failed');
+
+    this._close();
+
+    logger.debug('emit "failed"');
+
+    this.emit('failed', {
+      originator,
+      response : response || null,
+      cause
+    });
+  }
+
+  _succeeded(originator, response)
+  {
+    logger.debug('OPTIONS succeeded');
+
+    this._close();
+
+    logger.debug('emit "succeeded"');
+
+    this.emit('succeeded', {
+      originator,
+      response
+    });
+  }
+};
+
+},{"./Constants":2,"./Exceptions":6,"./Logger":9,"./RequestSender":20,"./SIPMessage":21,"./Utils":28,"events":31}],13:[function(require,module,exports){
+const Logger = require('./Logger');
 const Grammar = require('./Grammar');
 const SIPMessage = require('./SIPMessage');
-const debugerror = require('debug')('JsSIP:ERROR:Parser');
 
-debugerror.log = console.warn.bind(console);
+const logger = new Logger('Parser');
 
 /**
  * Parse SIP Message
@@ -14032,7 +14418,7 @@ exports.parseMessage = (data, ua) =>
 
   if (headerEnd === -1)
   {
-    debugerror('parseMessage() | no CRLF found, not a SIP message');
+    logger.warn('parseMessage() | no CRLF found, not a SIP message');
 
     return;
   }
@@ -14043,7 +14429,7 @@ exports.parseMessage = (data, ua) =>
 
   if (parsed === -1)
   {
-    debugerror(`parseMessage() | error parsing first line of SIP message: "${firstLine}"`);
+    logger.warn(`parseMessage() | error parsing first line of SIP message: "${firstLine}"`);
 
     return;
   }
@@ -14079,7 +14465,7 @@ exports.parseMessage = (data, ua) =>
     // Data.indexOf returned -1 due to a malformed message.
     else if (headerEnd === -1)
     {
-      debugerror('parseMessage() | malformed message');
+      logger.warn('parseMessage() | malformed message');
 
       return;
     }
@@ -14088,7 +14474,7 @@ exports.parseMessage = (data, ua) =>
 
     if (parsed !== true)
     {
-      debugerror('parseMessage() |', parsed.error);
+      logger.warn('parseMessage() |', parsed.error);
 
       return;
     }
@@ -14334,11 +14720,12 @@ function parseHeader(message, data, headerStart, headerEnd)
   }
 }
 
-},{"./Grammar":7,"./SIPMessage":19,"debug":30}],12:[function(require,module,exports){
+},{"./Grammar":7,"./Logger":9,"./SIPMessage":21}],14:[function(require,module,exports){
 /* globals RTCPeerConnection: false, RTCSessionDescription: false */
 
 const EventEmitter = require('events').EventEmitter;
 const sdp_transform = require('sdp-transform');
+const Logger = require('./Logger');
 const JsSIP_C = require('./Constants');
 const Exceptions = require('./Exceptions');
 const Transactions = require('./Transactions');
@@ -14352,10 +14739,8 @@ const RTCSession_Info = require('./RTCSession/Info');
 const RTCSession_ReferNotifier = require('./RTCSession/ReferNotifier');
 const RTCSession_ReferSubscriber = require('./RTCSession/ReferSubscriber');
 const URI = require('./URI');
-const debug = require('debug')('JsSIP:RTCSession');
-const debugerror = require('debug')('JsSIP:ERROR:RTCSession');
 
-debugerror.log = console.warn.bind(console);
+const logger = new Logger('RTCSession');
 
 const C = {
   // RTCSession states.
@@ -14388,7 +14773,7 @@ module.exports = class RTCSession extends EventEmitter
 
   constructor(ua)
   {
-    debug('new');
+    logger.debug('new');
 
     super();
 
@@ -14430,6 +14815,9 @@ module.exports = class RTCSession extends EventEmitter
 
     // Flag to indicate PeerConnection ready for new actions.
     this._rtcReady = true;
+
+    // Flag to indicate ICE candidate gathering is finished even if iceGatheringState is not yet 'complete'.
+    this._iceReady = false;
 
     // SIP Timers.
     this._timers = {
@@ -14600,7 +14988,7 @@ module.exports = class RTCSession extends EventEmitter
 
   connect(target, options = {}, initCallback)
   {
-    debug('connect()');
+    logger.debug('connect()');
 
     const originalTarget = target;
     const eventHandlers = Utils.cloneObject(options.eventHandlers);
@@ -14735,7 +15123,7 @@ module.exports = class RTCSession extends EventEmitter
 
   init_incoming(request, initCallback)
   {
-    debug('init_incoming()');
+    logger.debug('init_incoming()');
 
     let expires;
     const contentType = request.hasHeader('Content-Type') ?
@@ -14843,7 +15231,7 @@ module.exports = class RTCSession extends EventEmitter
    */
   answer(options = {})
   {
-    debug('answer()');
+    logger.debug('answer()');
 
     const request = this._request;
     const extraHeaders = Utils.cloneArray(options.extraHeaders);
@@ -15011,7 +15399,7 @@ module.exports = class RTCSession extends EventEmitter
               request.reply(480);
               this._failed('local', null, JsSIP_C.causes.USER_DENIED_MEDIA_ACCESS);
 
-              debugerror('emit "getusermediafailed" [error:%o]', error);
+              logger.warn('emit "getusermediafailed" [error:%o]', error);
 
               this.emit('getusermediafailed', error);
 
@@ -15053,7 +15441,7 @@ module.exports = class RTCSession extends EventEmitter
 
         const e = { originator: 'remote', type: 'offer', sdp: request.body };
 
-        debug('emit "sdp"');
+        logger.debug('emit "sdp"');
         this.emit('sdp', e);
 
         const offer = new RTCSessionDescription({ type: 'offer', sdp: e.sdp });
@@ -15066,7 +15454,7 @@ module.exports = class RTCSession extends EventEmitter
 
             this._failed('system', null, JsSIP_C.causes.WEBRTC_ERROR);
 
-            debugerror('emit "peerconnection:setremotedescriptionfailed" [error:%o]', error);
+            logger.warn('emit "peerconnection:setremotedescriptionfailed" [error:%o]', error);
 
             this.emit('peerconnection:setremotedescriptionfailed', error);
 
@@ -15140,7 +15528,7 @@ module.exports = class RTCSession extends EventEmitter
           return;
         }
 
-        debugerror(error);
+        logger.warn(error);
       });
   }
 
@@ -15149,7 +15537,7 @@ module.exports = class RTCSession extends EventEmitter
    */
   terminate(options = {})
   {
-    debug('terminate()');
+    logger.debug('terminate()');
 
     const cause = options.cause || JsSIP_C.causes.BYE;
     const extraHeaders = Utils.cloneArray(options.extraHeaders);
@@ -15171,7 +15559,7 @@ module.exports = class RTCSession extends EventEmitter
       case C.STATUS_NULL:
       case C.STATUS_INVITE_SENT:
       case C.STATUS_1XX_RECEIVED:
-        debug('canceling session');
+        logger.debug('canceling session');
 
         if (status_code && (status_code < 200 || status_code >= 700))
         {
@@ -15202,7 +15590,7 @@ module.exports = class RTCSession extends EventEmitter
         // - UAS -
       case C.STATUS_WAITING_FOR_ANSWER:
       case C.STATUS_ANSWERED:
-        debug('rejecting session');
+        logger.debug('rejecting session');
 
         status_code = status_code || 480;
 
@@ -15217,7 +15605,7 @@ module.exports = class RTCSession extends EventEmitter
 
       case C.STATUS_WAITING_FOR_ACK:
       case C.STATUS_CONFIRMED:
-        debug('terminating session');
+        logger.debug('terminating session');
 
         reason_phrase = options.reason_phrase || JsSIP_C.REASON_PHRASE[status_code] || '';
 
@@ -15293,7 +15681,7 @@ module.exports = class RTCSession extends EventEmitter
 
   sendDTMF(tones, options = {})
   {
-    debug('sendDTMF() | tones: %s', tones);
+    logger.debug('sendDTMF() | tones: %s', tones);
 
     let position = 0;
     let duration = options.duration || null;
@@ -15306,7 +15694,11 @@ module.exports = class RTCSession extends EventEmitter
     }
 
     // Check Session Status.
-    if (this._status !== C.STATUS_CONFIRMED && this._status !== C.STATUS_WAITING_FOR_ACK)
+    if (
+      this._status !== C.STATUS_CONFIRMED &&
+      this._status !== C.STATUS_WAITING_FOR_ACK &&
+      this._status !== C.STATUS_1XX_RECEIVED
+    )
     {
       throw new Exceptions.InvalidStateError(this._status);
     }
@@ -15344,12 +15736,12 @@ module.exports = class RTCSession extends EventEmitter
     }
     else if (duration < RTCSession_DTMF.C.MIN_DURATION)
     {
-      debug(`"duration" value is lower than the minimum allowed, setting it to ${RTCSession_DTMF.C.MIN_DURATION} milliseconds`);
+      logger.debug(`"duration" value is lower than the minimum allowed, setting it to ${RTCSession_DTMF.C.MIN_DURATION} milliseconds`);
       duration = RTCSession_DTMF.C.MIN_DURATION;
     }
     else if (duration > RTCSession_DTMF.C.MAX_DURATION)
     {
-      debug(`"duration" value is greater than the maximum allowed, setting it to ${RTCSession_DTMF.C.MAX_DURATION} milliseconds`);
+      logger.debug(`"duration" value is greater than the maximum allowed, setting it to ${RTCSession_DTMF.C.MAX_DURATION} milliseconds`);
       duration = RTCSession_DTMF.C.MAX_DURATION;
     }
     else
@@ -15369,7 +15761,7 @@ module.exports = class RTCSession extends EventEmitter
     }
     else if (interToneGap < RTCSession_DTMF.C.MIN_INTER_TONE_GAP)
     {
-      debug(`"interToneGap" value is lower than the minimum allowed, setting it to ${RTCSession_DTMF.C.MIN_INTER_TONE_GAP} milliseconds`);
+      logger.debug(`"interToneGap" value is lower than the minimum allowed, setting it to ${RTCSession_DTMF.C.MIN_INTER_TONE_GAP} milliseconds`);
       interToneGap = RTCSession_DTMF.C.MIN_INTER_TONE_GAP;
     }
     else
@@ -15448,10 +15840,14 @@ module.exports = class RTCSession extends EventEmitter
 
   sendInfo(contentType, body, options = {})
   {
-    debug('sendInfo()');
+    logger.debug('sendInfo()');
 
     // Check Session Status.
-    if (this._status !== C.STATUS_CONFIRMED && this._status !== C.STATUS_WAITING_FOR_ACK)
+    if (
+      this._status !== C.STATUS_CONFIRMED &&
+      this._status !== C.STATUS_WAITING_FOR_ACK &&
+      this._status !== C.STATUS_1XX_RECEIVED
+    )
     {
       throw new Exceptions.InvalidStateError(this._status);
     }
@@ -15466,7 +15862,7 @@ module.exports = class RTCSession extends EventEmitter
    */
   mute(options = { audio: true, video: false })
   {
-    debug('mute()');
+    logger.debug('mute()');
 
     let audioMuted = false, videoMuted = false;
 
@@ -15498,7 +15894,7 @@ module.exports = class RTCSession extends EventEmitter
    */
   unmute(options = { audio: true, video: true })
   {
-    debug('unmute()');
+    logger.debug('unmute()');
 
     let audioUnMuted = false, videoUnMuted = false;
 
@@ -15538,7 +15934,7 @@ module.exports = class RTCSession extends EventEmitter
    */
   hold(options = {}, done)
   {
-    debug('hold()');
+    logger.debug('hold()');
 
     if (this._status !== C.STATUS_WAITING_FOR_ACK && this._status !== C.STATUS_CONFIRMED)
     {
@@ -15594,7 +15990,7 @@ module.exports = class RTCSession extends EventEmitter
 
   unhold(options = {}, done)
   {
-    debug('unhold()');
+    logger.debug('unhold()');
 
     if (this._status !== C.STATUS_WAITING_FOR_ACK && this._status !== C.STATUS_CONFIRMED)
     {
@@ -15650,7 +16046,7 @@ module.exports = class RTCSession extends EventEmitter
 
   renegotiate(options = {}, done)
   {
-    debug('renegotiate()');
+    logger.debug('renegotiate()');
 
     const rtcOfferConstraints = options.rtcOfferConstraints || null;
 
@@ -15707,7 +16103,7 @@ module.exports = class RTCSession extends EventEmitter
    */
   refer(target, options)
   {
-    debug('refer()');
+    logger.debug('refer()');
 
     const originalTarget = target;
 
@@ -15754,7 +16150,7 @@ module.exports = class RTCSession extends EventEmitter
    */
   sendRequest(method, options)
   {
-    debug('sendRequest()');
+    logger.debug('sendRequest()');
 
     return this._dialog.sendRequest(method, options);
   }
@@ -15764,7 +16160,7 @@ module.exports = class RTCSession extends EventEmitter
    */
   receiveRequest(request)
   {
-    debug('receiveRequest()');
+    logger.debug('receiveRequest()');
 
     if (request.method === JsSIP_C.CANCEL)
     {
@@ -15817,7 +16213,7 @@ module.exports = class RTCSession extends EventEmitter
 
             const e = { originator: 'remote', type: 'answer', sdp: request.body };
 
-            debug('emit "sdp"');
+            logger.debug('emit "sdp"');
             this.emit('sdp', e);
 
             const answer = new RTCSessionDescription({ type: 'answer', sdp: e.sdp });
@@ -15838,7 +16234,7 @@ module.exports = class RTCSession extends EventEmitter
                   status_code : 488
                 });
 
-                debugerror('emit "peerconnection:setremotedescriptionfailed" [error:%o]', error);
+                logger.warn('emit "peerconnection:setremotedescriptionfailed" [error:%o]', error);
                 this.emit('peerconnection:setremotedescriptionfailed', error);
               });
           }
@@ -15955,7 +16351,7 @@ module.exports = class RTCSession extends EventEmitter
 
   onTransportError()
   {
-    debugerror('onTransportError()');
+    logger.warn('onTransportError()');
 
     if (this._status !== C.STATUS_TERMINATED)
     {
@@ -15969,7 +16365,7 @@ module.exports = class RTCSession extends EventEmitter
 
   onRequestTimeout()
   {
-    debugerror('onRequestTimeout()');
+    logger.warn('onRequestTimeout()');
 
     if (this._status !== C.STATUS_TERMINATED)
     {
@@ -15983,7 +16379,7 @@ module.exports = class RTCSession extends EventEmitter
 
   onDialogError()
   {
-    debugerror('onDialogError()');
+    logger.warn('onDialogError()');
 
     if (this._status !== C.STATUS_TERMINATED)
     {
@@ -15998,7 +16394,7 @@ module.exports = class RTCSession extends EventEmitter
   // Called from DTMF handler.
   newDTMF(data)
   {
-    debug('newDTMF()');
+    logger.debug('newDTMF()');
 
     this.emit('newDTMF', data);
   }
@@ -16006,7 +16402,7 @@ module.exports = class RTCSession extends EventEmitter
   // Called from Info handler.
   newInfo(data)
   {
-    debug('newInfo()');
+    logger.debug('newInfo()');
 
     this.emit('newInfo', data);
   }
@@ -16018,7 +16414,7 @@ module.exports = class RTCSession extends EventEmitter
   {
     if (!this._rtcReady)
     {
-      debug('_isReadyToReOffer() | internal WebRTC status not ready');
+      logger.debug('_isReadyToReOffer() | internal WebRTC status not ready');
 
       return false;
     }
@@ -16026,7 +16422,7 @@ module.exports = class RTCSession extends EventEmitter
     // No established yet.
     if (!this._dialog)
     {
-      debug('_isReadyToReOffer() | session not established yet');
+      logger.debug('_isReadyToReOffer() | session not established yet');
 
       return false;
     }
@@ -16035,7 +16431,7 @@ module.exports = class RTCSession extends EventEmitter
     if (this._dialog.uac_pending_reply === true ||
         this._dialog.uas_pending_reply === true)
     {
-      debug('_isReadyToReOffer() | there is another INVITE/UPDATE transaction in progress');
+      logger.debug('_isReadyToReOffer() | there is another INVITE/UPDATE transaction in progress');
 
       return false;
     }
@@ -16045,12 +16441,12 @@ module.exports = class RTCSession extends EventEmitter
 
   _close()
   {
-    debug('close()');
+    logger.debug('close()');
 
     // Close local MediaStream if it was not given by the user.
     if (this._localMediaStream && this._localMediaStreamLocallyGenerated)
     {
-      debug('close() | closing local MediaStream');
+      logger.debug('close() | closing local MediaStream');
 
       Utils.closeMediaStream(this._localMediaStream);
     }
@@ -16071,7 +16467,7 @@ module.exports = class RTCSession extends EventEmitter
       }
       catch (error)
       {
-        debugerror('close() | error closing the RTCPeerConnection: %o', error);
+        logger.warn('close() | error closing the RTCPeerConnection: %o', error);
       }
     }
 
@@ -16169,7 +16565,7 @@ module.exports = class RTCSession extends EventEmitter
     {
       if (this._status === C.STATUS_WAITING_FOR_ACK)
       {
-        debug('no ACK received, terminating the session');
+        logger.debug('no ACK received, terminating the session');
 
         clearTimeout(this._timers.invite2xxTimer);
         this.sendRequest(JsSIP_C.BYE);
@@ -16198,7 +16594,7 @@ module.exports = class RTCSession extends EventEmitter
       }
     });
 
-    debug('emit "peerconnection"');
+    logger.debug('emit "peerconnection"');
 
     this.emit('peerconnection', {
       peerconnection : this._connection
@@ -16207,7 +16603,7 @@ module.exports = class RTCSession extends EventEmitter
 
   _createLocalDescription(type, constraints)
   {
-    debug('createLocalDescription()');
+    logger.debug('createLocalDescription()');
 
     if (type !== 'offer' && type !== 'answer')
       throw new Error(`createLocalDescription() | invalid type "${type}"`);
@@ -16225,7 +16621,7 @@ module.exports = class RTCSession extends EventEmitter
           return connection.createOffer(constraints)
             .catch((error) =>
             {
-              debugerror('emit "peerconnection:createofferfailed" [error:%o]', error);
+              logger.warn('emit "peerconnection:createofferfailed" [error:%o]', error);
 
               this.emit('peerconnection:createofferfailed', error);
 
@@ -16237,7 +16633,7 @@ module.exports = class RTCSession extends EventEmitter
           return connection.createAnswer(constraints)
             .catch((error) =>
             {
-              debugerror('emit "peerconnection:createanswerfailed" [error:%o]', error);
+              logger.warn('emit "peerconnection:createanswerfailed" [error:%o]', error);
 
               this.emit('peerconnection:createanswerfailed', error);
 
@@ -16253,7 +16649,7 @@ module.exports = class RTCSession extends EventEmitter
           {
             this._rtcReady = true;
 
-            debugerror('emit "peerconnection:setlocaldescriptionfailed" [error:%o]', error);
+            logger.warn('emit "peerconnection:setlocaldescriptionfailed" [error:%o]', error);
 
             this.emit('peerconnection:setlocaldescriptionfailed', error);
 
@@ -16263,13 +16659,21 @@ module.exports = class RTCSession extends EventEmitter
       .then(() =>
       {
         // Resolve right away if 'pc.iceGatheringState' is 'complete'.
-        if (connection.iceGatheringState === 'complete' && (!constraints || !constraints.iceRestart))
+        /**
+         * Resolve right away if:
+         * - 'connection.iceGatheringState' is 'complete' and no 'iceRestart' constraint is set.
+         * - 'connection.iceGatheringState' is 'gathering' and 'iceReady' is true.
+         */
+        const iceRestart = constraints && constraints.iceRestart;
+
+        if ((connection.iceGatheringState === 'complete' && !iceRestart) ||
+          (connection.iceGatheringState === 'gathering' && this._iceReady))
         {
           this._rtcReady = true;
 
           const e = { originator: 'local', type: type, sdp: connection.localDescription.sdp };
 
-          debug('emit "sdp"');
+          logger.debug('emit "sdp"');
 
           this.emit('sdp', e);
 
@@ -16283,17 +16687,27 @@ module.exports = class RTCSession extends EventEmitter
           let iceCandidateListener;
           let iceGatheringStateListener;
 
+          this._iceReady = false;
+
           const ready = () =>
           {
+            if (finished)
+            {
+              return;
+            }
+
             connection.removeEventListener('icecandidate', iceCandidateListener);
             connection.removeEventListener('icegatheringstatechange', iceGatheringStateListener);
 
             finished = true;
             this._rtcReady = true;
 
+            // connection.iceGatheringState will still indicate 'gathering' and thus be blocking.
+            this._iceReady = true;
+
             const e = { originator: 'local', type: type, sdp: connection.localDescription.sdp };
 
-            debug('emit "sdp"');
+            logger.debug('emit "sdp"');
 
             this.emit('sdp', e);
 
@@ -16311,8 +16725,7 @@ module.exports = class RTCSession extends EventEmitter
                 ready
               });
             }
-
-            else if (!finished)
+            else
             {
               ready();
             }
@@ -16320,7 +16733,7 @@ module.exports = class RTCSession extends EventEmitter
 
           connection.addEventListener('icegatheringstatechange', iceGatheringStateListener = () =>
           {
-            if ((connection.iceGatheringState === 'complete') && !finished)
+            if (connection.iceGatheringState === 'complete')
             {
               ready();
             }
@@ -16354,7 +16767,7 @@ module.exports = class RTCSession extends EventEmitter
         // Dialog has been successfully created.
         if (early_dialog.error)
         {
-          debug(early_dialog.error);
+          logger.debug(early_dialog.error);
           this._failed('remote', message, JsSIP_C.causes.INTERNAL_ERROR);
 
           return false;
@@ -16389,7 +16802,7 @@ module.exports = class RTCSession extends EventEmitter
 
       if (dialog.error)
       {
-        debug(dialog.error);
+        logger.debug(dialog.error);
         this._failed('remote', message, JsSIP_C.causes.INTERNAL_ERROR);
 
         return false;
@@ -16409,7 +16822,7 @@ module.exports = class RTCSession extends EventEmitter
 
   _receiveReinvite(request)
   {
-    debug('receiveReinvite()');
+    logger.debug('receiveReinvite()');
 
     const contentType = request.hasHeader('Content-Type') ?
       request.getHeader('Content-Type').toLowerCase() : undefined;
@@ -16478,7 +16891,7 @@ module.exports = class RTCSession extends EventEmitter
     // Request with SDP.
     if (contentType !== 'application/sdp')
     {
-      debug('invalid Content-Type');
+      logger.debug('invalid Content-Type');
       request.reply(415);
 
       return;
@@ -16497,7 +16910,7 @@ module.exports = class RTCSession extends EventEmitter
       })
       .catch((error) =>
       {
-        debugerror(error);
+        logger.warn(error);
       });
 
     function sendAnswer(desc)
@@ -16533,7 +16946,7 @@ module.exports = class RTCSession extends EventEmitter
    */
   _receiveUpdate(request)
   {
-    debug('receiveUpdate()');
+    logger.debug('receiveUpdate()');
 
     const contentType = request.hasHeader('Content-Type') ?
       request.getHeader('Content-Type').toLowerCase() : undefined;
@@ -16583,7 +16996,7 @@ module.exports = class RTCSession extends EventEmitter
 
     if (contentType !== 'application/sdp')
     {
-      debug('invalid Content-Type');
+      logger.debug('invalid Content-Type');
 
       request.reply(415);
 
@@ -16603,7 +17016,7 @@ module.exports = class RTCSession extends EventEmitter
       })
       .catch((error) =>
       {
-        debugerror(error);
+        logger.warn(error);
       });
 
     function sendAnswer(desc)
@@ -16624,7 +17037,7 @@ module.exports = class RTCSession extends EventEmitter
 
   _processInDialogSdpOffer(request)
   {
-    debug('_processInDialogSdpOffer()');
+    logger.debug('_processInDialogSdpOffer()');
 
     const sdp = request.parseSDP();
 
@@ -16653,7 +17066,7 @@ module.exports = class RTCSession extends EventEmitter
 
     const e = { originator: 'remote', type: 'offer', sdp: request.body };
 
-    debug('emit "sdp"');
+    logger.debug('emit "sdp"');
     this.emit('sdp', e);
 
     const offer = new RTCSessionDescription({ type: 'offer', sdp: e.sdp });
@@ -16671,7 +17084,7 @@ module.exports = class RTCSession extends EventEmitter
           .catch((error) =>
           {
             request.reply(488);
-            debugerror('emit "peerconnection:setremotedescriptionfailed" [error:%o]', error);
+            logger.warn('emit "peerconnection:setremotedescriptionfailed" [error:%o]', error);
 
             this.emit('peerconnection:setremotedescriptionfailed', error);
 
@@ -16708,14 +17121,14 @@ module.exports = class RTCSession extends EventEmitter
           .catch((error) =>
           {
             request.reply(500);
-            debugerror('emit "peerconnection:createtelocaldescriptionfailed" [error:%o]', error);
+            logger.warn('emit "peerconnection:createtelocaldescriptionfailed" [error:%o]', error);
 
             throw error;
           });
       })
       .catch((error) =>
       {
-        debugerror('_processInDialogSdpOffer() failed [error: %o]', error);
+        logger.warn('_processInDialogSdpOffer() failed [error: %o]', error);
       });
 
     return this._connectionPromiseQueue;
@@ -16726,11 +17139,11 @@ module.exports = class RTCSession extends EventEmitter
    */
   _receiveRefer(request)
   {
-    debug('receiveRefer()');
+    logger.debug('receiveRefer()');
 
     if (!request.refer_to)
     {
-      debug('no Refer-To header field present in REFER');
+      logger.debug('no Refer-To header field present in REFER');
       request.reply(400);
 
       return;
@@ -16738,7 +17151,7 @@ module.exports = class RTCSession extends EventEmitter
 
     if (request.refer_to.uri.scheme !== JsSIP_C.SIP)
     {
-      debug('Refer-To header field points to a non-SIP URI scheme');
+      logger.debug('Refer-To header field points to a non-SIP URI scheme');
       request.reply(416);
 
       return;
@@ -16749,7 +17162,7 @@ module.exports = class RTCSession extends EventEmitter
 
     const notifier = new RTCSession_ReferNotifier(this, request.cseq);
 
-    debug('emit "refer"');
+    logger.debug('emit "refer"');
 
     // Emit 'refer'.
     this.emit('refer', {
@@ -16821,7 +17234,7 @@ module.exports = class RTCSession extends EventEmitter
    */
   _receiveNotify(request)
   {
-    debug('receiveNotify()');
+    logger.debug('receiveNotify()');
 
     if (!request.event)
     {
@@ -16875,7 +17288,7 @@ module.exports = class RTCSession extends EventEmitter
    */
   _receiveReplaces(request)
   {
-    debug('receiveReplaces()');
+    logger.debug('receiveReplaces()');
 
     function accept(initCallback)
     {
@@ -16898,7 +17311,7 @@ module.exports = class RTCSession extends EventEmitter
 
     function reject()
     {
-      debug('Replaced INVITE rejected by the user');
+      logger.debug('Replaced INVITE rejected by the user');
       request.reply(486);
     }
 
@@ -16961,7 +17374,7 @@ module.exports = class RTCSession extends EventEmitter
 
               this._failed('local', null, JsSIP_C.causes.USER_DENIED_MEDIA_ACCESS);
 
-              debugerror('emit "getusermediafailed" [error:%o]', error);
+              logger.warn('emit "getusermediafailed" [error:%o]', error);
 
               this.emit('getusermediafailed', error);
 
@@ -17014,7 +17427,7 @@ module.exports = class RTCSession extends EventEmitter
         this._request.body = desc;
         this._status = C.STATUS_INVITE_SENT;
 
-        debug('emit "sending" [request:%o]', this._request);
+        logger.debug('emit "sending" [request:%o]', this._request);
 
         // Emit 'sending' so the app can mangle the body before the request is sent.
         this.emit('sending', {
@@ -17030,7 +17443,7 @@ module.exports = class RTCSession extends EventEmitter
           return;
         }
 
-        debugerror(error);
+        logger.warn(error);
       });
   }
 
@@ -17046,7 +17459,7 @@ module.exports = class RTCSession extends EventEmitter
 
     if (!(sender && sender.dtmf))
     {
-      debugerror('sendDTMF() | no local audio track to send DTMF with');
+      logger.warn('sendDTMF() | no local audio track to send DTMF with');
 
       return;
     }
@@ -17059,7 +17472,7 @@ module.exports = class RTCSession extends EventEmitter
    */
   _receiveInviteResponse(response)
   {
-    debug('receiveInviteResponse()');
+    logger.debug('receiveInviteResponse()');
 
     // Handle 2XX retransmissions and responses from forked requests.
     if (this._dialog && (response.status_code >=200 && response.status_code <=299))
@@ -17085,7 +17498,7 @@ module.exports = class RTCSession extends EventEmitter
 
         if (dialog.error !== undefined)
         {
-          debug(dialog.error);
+          logger.debug(dialog.error);
 
           return;
         }
@@ -17129,7 +17542,7 @@ module.exports = class RTCSession extends EventEmitter
         // Do nothing with 1xx responses without To tag.
         if (!response.to_tag)
         {
-          debug('1xx response received without to tag');
+          logger.debug('1xx response received without to tag');
           break;
         }
 
@@ -17153,7 +17566,7 @@ module.exports = class RTCSession extends EventEmitter
 
         const e = { originator: 'remote', type: 'answer', sdp: response.body };
 
-        debug('emit "sdp"');
+        logger.debug('emit "sdp"');
         this.emit('sdp', e);
 
         const answer = new RTCSessionDescription({ type: 'answer', sdp: e.sdp });
@@ -17163,7 +17576,7 @@ module.exports = class RTCSession extends EventEmitter
           .then(() => this._progress('remote', response))
           .catch((error) =>
           {
-            debugerror('emit "peerconnection:setremotedescriptionfailed" [error:%o]', error);
+            logger.warn('emit "peerconnection:setremotedescriptionfailed" [error:%o]', error);
 
             this.emit('peerconnection:setremotedescriptionfailed', error);
           });
@@ -17189,7 +17602,7 @@ module.exports = class RTCSession extends EventEmitter
 
         const e = { originator: 'remote', type: 'answer', sdp: response.body };
 
-        debug('emit "sdp"');
+        logger.debug('emit "sdp"');
         this.emit('sdp', e);
 
         const answer = new RTCSessionDescription({ type: 'answer', sdp: e.sdp });
@@ -17227,7 +17640,7 @@ module.exports = class RTCSession extends EventEmitter
                 this._acceptAndTerminate(response, 488, 'Not Acceptable Here');
                 this._failed('remote', response, JsSIP_C.causes.BAD_MEDIA_DESCRIPTION);
 
-                debugerror('emit "peerconnection:setremotedescriptionfailed" [error:%o]', error);
+                logger.warn('emit "peerconnection:setremotedescriptionfailed" [error:%o]', error);
 
                 this.emit('peerconnection:setremotedescriptionfailed', error);
               });
@@ -17249,7 +17662,7 @@ module.exports = class RTCSession extends EventEmitter
    */
   _sendReinvite(options = {})
   {
-    debug('sendReinvite()');
+    logger.debug('sendReinvite()');
 
     const extraHeaders = Utils.cloneArray(options.extraHeaders);
     const eventHandlers = Utils.cloneObject(options.eventHandlers);
@@ -17275,7 +17688,7 @@ module.exports = class RTCSession extends EventEmitter
 
         const e = { originator: 'local', type: 'offer', sdp };
 
-        debug('emit "sdp"');
+        logger.debug('emit "sdp"');
         this.emit('sdp', e);
 
         this.sendRequest(JsSIP_C.INVITE, {
@@ -17342,7 +17755,7 @@ module.exports = class RTCSession extends EventEmitter
 
       const e = { originator: 'remote', type: 'answer', sdp: response.body };
 
-      debug('emit "sdp"');
+      logger.debug('emit "sdp"');
       this.emit('sdp', e);
 
       const answer = new RTCSessionDescription({ type: 'answer', sdp: e.sdp });
@@ -17360,7 +17773,7 @@ module.exports = class RTCSession extends EventEmitter
         {
           onFailed.call(this);
 
-          debugerror('emit "peerconnection:setremotedescriptionfailed" [error:%o]', error);
+          logger.warn('emit "peerconnection:setremotedescriptionfailed" [error:%o]', error);
 
           this.emit('peerconnection:setremotedescriptionfailed', error);
         });
@@ -17380,7 +17793,7 @@ module.exports = class RTCSession extends EventEmitter
    */
   _sendUpdate(options = {})
   {
-    debug('sendUpdate()');
+    logger.debug('sendUpdate()');
 
     const extraHeaders = Utils.cloneArray(options.extraHeaders);
     const eventHandlers = Utils.cloneObject(options.eventHandlers);
@@ -17410,7 +17823,7 @@ module.exports = class RTCSession extends EventEmitter
 
           const e = { originator: 'local', type: 'offer', sdp };
 
-          debug('emit "sdp"');
+          logger.debug('emit "sdp"');
           this.emit('sdp', e);
 
           this.sendRequest(JsSIP_C.UPDATE, {
@@ -17508,7 +17921,7 @@ module.exports = class RTCSession extends EventEmitter
 
         const e = { originator: 'remote', type: 'answer', sdp: response.body };
 
-        debug('emit "sdp"');
+        logger.debug('emit "sdp"');
         this.emit('sdp', e);
 
         const answer = new RTCSessionDescription({ type: 'answer', sdp: e.sdp });
@@ -17526,7 +17939,7 @@ module.exports = class RTCSession extends EventEmitter
           {
             onFailed.call(this);
 
-            debugerror('emit "peerconnection:setremotedescriptionfailed" [error:%o]', error);
+            logger.warn('emit "peerconnection:setremotedescriptionfailed" [error:%o]', error);
 
             this.emit('peerconnection:setremotedescriptionfailed', error);
           });
@@ -17547,7 +17960,7 @@ module.exports = class RTCSession extends EventEmitter
 
   _acceptAndTerminate(response, status_code, reason_phrase)
   {
-    debug('acceptAndTerminate()');
+    logger.debug('acceptAndTerminate()');
 
     const extraHeaders = [];
 
@@ -17586,7 +17999,7 @@ module.exports = class RTCSession extends EventEmitter
     // Local hold.
     if (this._localHold && !this._remoteHold)
     {
-      debug('mangleOffer() | me on hold, mangling offer');
+      logger.debug('mangleOffer() | me on hold, mangling offer');
       for (const m of sdp.media)
       {
         if (holdMediaTypes.indexOf(m.type) === -1)
@@ -17610,7 +18023,7 @@ module.exports = class RTCSession extends EventEmitter
     // Local and remote hold.
     else if (this._localHold && this._remoteHold)
     {
-      debug('mangleOffer() | both on hold, mangling offer');
+      logger.debug('mangleOffer() | both on hold, mangling offer');
       for (const m of sdp.media)
       {
         if (holdMediaTypes.indexOf(m.type) === -1)
@@ -17623,7 +18036,7 @@ module.exports = class RTCSession extends EventEmitter
     // Remote hold.
     else if (this._remoteHold)
     {
-      debug('mangleOffer() | remote on hold, mangling offer');
+      logger.debug('mangleOffer() | remote on hold, mangling offer');
       for (const m of sdp.media)
       {
         if (holdMediaTypes.indexOf(m.type) === -1)
@@ -17741,7 +18154,9 @@ module.exports = class RTCSession extends EventEmitter
       {
         if (this._status === C.STATUS_TERMINATED) { return; }
 
-        debug('runSessionTimer() | sending session refresh request');
+        if (!this._isReadyToReOffer()) { return; }
+
+        logger.debug('runSessionTimer() | sending session refresh request');
 
         if (this._sessionTimers.refreshMethod === JsSIP_C.UPDATE)
         {
@@ -17761,7 +18176,7 @@ module.exports = class RTCSession extends EventEmitter
       {
         if (this._status === C.STATUS_TERMINATED) { return; }
 
-        debugerror('runSessionTimer() | timer expired, terminating the session');
+        logger.warn('runSessionTimer() | timer expired, terminating the session');
 
         this.terminate({
           cause         : JsSIP_C.causes.REQUEST_TIMEOUT,
@@ -17795,7 +18210,7 @@ module.exports = class RTCSession extends EventEmitter
 
   _newRTCSession(originator, request)
   {
-    debug('newRTCSession()');
+    logger.debug('newRTCSession()');
 
     this._ua.newRTCSession(this, {
       originator,
@@ -17806,9 +18221,9 @@ module.exports = class RTCSession extends EventEmitter
 
   _connecting(request)
   {
-    debug('session connecting');
+    logger.debug('session connecting');
 
-    debug('emit "connecting"');
+    logger.debug('emit "connecting"');
 
     this.emit('connecting', {
       request
@@ -17817,9 +18232,9 @@ module.exports = class RTCSession extends EventEmitter
 
   _progress(originator, response)
   {
-    debug('session progress');
+    logger.debug('session progress');
 
-    debug('emit "progress"');
+    logger.debug('emit "progress"');
 
     this.emit('progress', {
       originator,
@@ -17829,11 +18244,11 @@ module.exports = class RTCSession extends EventEmitter
 
   _accepted(originator, message)
   {
-    debug('session accepted');
+    logger.debug('session accepted');
 
     this._start_time = new Date();
 
-    debug('emit "accepted"');
+    logger.debug('emit "accepted"');
 
     this.emit('accepted', {
       originator,
@@ -17843,11 +18258,11 @@ module.exports = class RTCSession extends EventEmitter
 
   _confirmed(originator, ack)
   {
-    debug('session confirmed');
+    logger.debug('session confirmed');
 
     this._is_confirmed = true;
 
-    debug('emit "confirmed"');
+    logger.debug('emit "confirmed"');
 
     this.emit('confirmed', {
       originator,
@@ -17857,13 +18272,13 @@ module.exports = class RTCSession extends EventEmitter
 
   _ended(originator, message, cause)
   {
-    debug('session ended');
+    logger.debug('session ended');
 
     this._end_time = new Date();
 
     this._close();
 
-    debug('emit "ended"');
+    logger.debug('emit "ended"');
 
     this.emit('ended', {
       originator,
@@ -17874,10 +18289,10 @@ module.exports = class RTCSession extends EventEmitter
 
   _failed(originator, message, cause)
   {
-    debug('session failed');
+    logger.debug('session failed');
 
     // Emit private '_failed' event first.
-    debug('emit "_failed"');
+    logger.debug('emit "_failed"');
 
     this.emit('_failed', {
       originator,
@@ -17887,7 +18302,7 @@ module.exports = class RTCSession extends EventEmitter
 
     this._close();
 
-    debug('emit "failed"');
+    logger.debug('emit "failed"');
 
     this.emit('failed', {
       originator,
@@ -17898,11 +18313,11 @@ module.exports = class RTCSession extends EventEmitter
 
   _onhold(originator)
   {
-    debug('session onhold');
+    logger.debug('session onhold');
 
     this._setLocalMediaStatus();
 
-    debug('emit "hold"');
+    logger.debug('emit "hold"');
 
     this.emit('hold', {
       originator
@@ -17911,11 +18326,11 @@ module.exports = class RTCSession extends EventEmitter
 
   _onunhold(originator)
   {
-    debug('session onunhold');
+    logger.debug('session onunhold');
 
     this._setLocalMediaStatus();
 
-    debug('emit "unhold"');
+    logger.debug('emit "unhold"');
 
     this.emit('unhold', {
       originator
@@ -17924,11 +18339,11 @@ module.exports = class RTCSession extends EventEmitter
 
   _onmute({ audio, video })
   {
-    debug('session onmute');
+    logger.debug('session onmute');
 
     this._setLocalMediaStatus();
 
-    debug('emit "muted"');
+    logger.debug('emit "muted"');
 
     this.emit('muted', {
       audio,
@@ -17938,11 +18353,11 @@ module.exports = class RTCSession extends EventEmitter
 
   _onunmute({ audio, video })
   {
-    debug('session onunmute');
+    logger.debug('session onunmute');
 
     this._setLocalMediaStatus();
 
-    debug('emit "unmuted"');
+    logger.debug('emit "unmuted"');
 
     this.emit('unmuted', {
       audio,
@@ -17951,15 +18366,14 @@ module.exports = class RTCSession extends EventEmitter
   }
 };
 
-},{"./Constants":2,"./Dialog":3,"./Exceptions":6,"./RTCSession/DTMF":13,"./RTCSession/Info":14,"./RTCSession/ReferNotifier":15,"./RTCSession/ReferSubscriber":16,"./RequestSender":18,"./SIPMessage":19,"./Timers":21,"./Transactions":22,"./URI":25,"./Utils":26,"debug":30,"events":29,"sdp-transform":35}],13:[function(require,module,exports){
+},{"./Constants":2,"./Dialog":3,"./Exceptions":6,"./Logger":9,"./RTCSession/DTMF":15,"./RTCSession/Info":16,"./RTCSession/ReferNotifier":17,"./RTCSession/ReferSubscriber":18,"./RequestSender":20,"./SIPMessage":21,"./Timers":23,"./Transactions":24,"./URI":27,"./Utils":28,"events":31,"sdp-transform":37}],15:[function(require,module,exports){
 const EventEmitter = require('events').EventEmitter;
+const Logger = require('../Logger');
 const JsSIP_C = require('../Constants');
 const Exceptions = require('../Exceptions');
 const Utils = require('../Utils');
-const debug = require('debug')('JsSIP:RTCSession:DTMF');
-const debugerror = require('debug')('JsSIP:ERROR:RTCSession:DTMF');
 
-debugerror.log = console.warn.bind(console);
+const logger = new Logger('RTCSession:DTMF');
 
 const C = {
   MIN_DURATION           : 70,
@@ -18127,7 +18541,7 @@ module.exports = class DTMF extends EventEmitter
 
     if (!this._tone)
     {
-      debug('invalid INFO DTMF received, discarded');
+      logger.debug('invalid INFO DTMF received, discarded');
     }
     else
     {
@@ -18145,11 +18559,8 @@ module.exports = class DTMF extends EventEmitter
  */
 module.exports.C = C;
 
-},{"../Constants":2,"../Exceptions":6,"../Utils":26,"debug":30,"events":29}],14:[function(require,module,exports){
+},{"../Constants":2,"../Exceptions":6,"../Logger":9,"../Utils":28,"events":31}],16:[function(require,module,exports){
 const EventEmitter = require('events').EventEmitter;
-const debugerror = require('debug')('JsSIP:ERROR:RTCSession:Info');
-
-debugerror.log = console.warn.bind(console);
 const JsSIP_C = require('../Constants');
 const Exceptions = require('../Exceptions');
 const Utils = require('../Utils');
@@ -18258,9 +18669,11 @@ module.exports = class Info extends EventEmitter
   }
 };
 
-},{"../Constants":2,"../Exceptions":6,"../Utils":26,"debug":30,"events":29}],15:[function(require,module,exports){
+},{"../Constants":2,"../Exceptions":6,"../Utils":28,"events":31}],17:[function(require,module,exports){
+const Logger = require('../Logger');
 const JsSIP_C = require('../Constants');
-const debug = require('debug')('JsSIP:RTCSession:ReferNotifier');
+
+const logger = new Logger('RTCSession:ReferNotifier');
 
 const C = {
   event_type : 'refer',
@@ -18283,7 +18696,7 @@ module.exports = class ReferNotifier
 
   notify(code, reason)
   {
-    debug('notify()');
+    logger.debug('notify()');
 
     if (this._active === false)
     {
@@ -18319,12 +18732,14 @@ module.exports = class ReferNotifier
   }
 };
 
-},{"../Constants":2,"debug":30}],16:[function(require,module,exports){
+},{"../Constants":2,"../Logger":9}],18:[function(require,module,exports){
 const EventEmitter = require('events').EventEmitter;
+const Logger = require('../Logger');
 const JsSIP_C = require('../Constants');
 const Grammar = require('../Grammar');
 const Utils = require('../Utils');
-const debug = require('debug')('JsSIP:RTCSession:ReferSubscriber');
+
+const logger = new Logger('RTCSession:ReferSubscriber');
 
 module.exports = class ReferSubscriber extends EventEmitter
 {
@@ -18343,7 +18758,7 @@ module.exports = class ReferSubscriber extends EventEmitter
 
   sendRefer(target, options = {})
   {
-    debug('sendRefer()');
+    logger.debug('sendRefer()');
 
     const extraHeaders = Utils.cloneArray(options.extraHeaders);
     const eventHandlers = Utils.cloneObject(options.eventHandlers);
@@ -18374,10 +18789,13 @@ module.exports = class ReferSubscriber extends EventEmitter
 
     extraHeaders.push(referTo);
 
-    // Referred-By header field.
-    const referredBy = `Referred-By: <${this._session._ua._configuration.uri._scheme}:${this._session._ua._configuration.uri._user}@${this._session._ua._configuration.uri._host}>`;
+    // Referred-By header field (if not already present).
+    if (!extraHeaders.some((header) => header.toLowerCase().startsWith('referred-by:')))
+    {
+      const referredBy = `Referred-By: <${this._session._ua._configuration.uri._scheme}:${this._session._ua._configuration.uri._user}@${this._session._ua._configuration.uri._host}>`;
 
-    extraHeaders.push(referredBy);
+      extraHeaders.push(referredBy);
+    }
 
     extraHeaders.push(`Contact: ${this._session.contact}`);
 
@@ -18412,18 +18830,18 @@ module.exports = class ReferSubscriber extends EventEmitter
 
   receiveNotify(request)
   {
-    debug('receiveNotify()');
+    logger.debug('receiveNotify()');
 
     if (!request.body)
     {
       return;
     }
 
-    const status_line = Grammar.parse(request.body.trim(), 'Status_Line');
+    const status_line = Grammar.parse(request.body.trim().split('\r\n', 1)[0], 'Status_Line');
 
     if (status_line === -1)
     {
-      debug(`receiveNotify() | error parsing NOTIFY body: "${request.body}"`);
+      logger.debug(`receiveNotify() | error parsing NOTIFY body: "${request.body}"`);
 
       return;
     }
@@ -18462,9 +18880,9 @@ module.exports = class ReferSubscriber extends EventEmitter
 
   _requestSucceeded(response)
   {
-    debug('REFER succeeded');
+    logger.debug('REFER succeeded');
 
-    debug('emit "requestSucceeded"');
+    logger.debug('emit "requestSucceeded"');
 
     this.emit('requestSucceeded', {
       response
@@ -18473,9 +18891,9 @@ module.exports = class ReferSubscriber extends EventEmitter
 
   _requestFailed(response, cause)
   {
-    debug('REFER failed');
+    logger.debug('REFER failed');
 
-    debug('emit "requestFailed"');
+    logger.debug('emit "requestFailed"');
 
     this.emit('requestFailed', {
       response : response || null,
@@ -18484,12 +18902,14 @@ module.exports = class ReferSubscriber extends EventEmitter
   }
 };
 
-},{"../Constants":2,"../Grammar":7,"../Utils":26,"debug":30,"events":29}],17:[function(require,module,exports){
+},{"../Constants":2,"../Grammar":7,"../Logger":9,"../Utils":28,"events":31}],19:[function(require,module,exports){
+const Logger = require('./Logger');
 const Utils = require('./Utils');
 const JsSIP_C = require('./Constants');
 const SIPMessage = require('./SIPMessage');
 const RequestSender = require('./RequestSender');
-const debug = require('debug')('JsSIP:Registrator');
+
+const logger = new Logger('Registrator');
 
 const MIN_REGISTER_EXPIRES = 10; // In seconds.
 
@@ -18497,7 +18917,8 @@ module.exports = class Registrator
 {
   constructor(ua, transport)
   {
-    const reg_id=1; // Force reg_id to 1.
+    // Force reg_id to 1.
+    this._reg_id = 1;
 
     this._ua = ua;
     this._transport = transport;
@@ -18531,11 +18952,11 @@ module.exports = class Registrator
     // Custom Contact header params for REGISTER and un-REGISTER.
     this._extraContactParams = '';
 
-    if (reg_id)
-    {
-      this._contact += `;reg-id=${reg_id}`;
-      this._contact += `;+sip.instance="<urn:uuid:${this._ua.configuration.instance_id}>"`;
-    }
+    // Contents of the sip.instance Contact header parameter.
+    this._sipInstance = `"<urn:uuid:${this._ua.configuration.instance_id}>"`;
+
+    this._contact += `;reg-id=${this._reg_id}`;
+    this._contact += `;+sip.instance=${this._sipInstance}`;
   }
 
   get registered()
@@ -18582,7 +19003,7 @@ module.exports = class Registrator
   {
     if (this._registering)
     {
-      debug('Register request in progress...');
+      logger.debug('Register request in progress...');
 
       return;
     }
@@ -18593,11 +19014,26 @@ module.exports = class Registrator
 ${this._contact};expires=${this._expires}${this._extraContactParams}`);
     extraHeaders.push(`Expires: ${this._expires}`);
 
+    let fromTag = Utils.newTag();
+
+    if (this._ua.configuration.register_from_tag_trail)
+    {
+      if (typeof this._ua.configuration.register_from_tag_trail === 'function')
+      {
+        fromTag += this._ua.configuration.register_from_tag_trail();
+      }
+      else
+      {
+        fromTag += this._ua.configuration.register_from_tag_trail;
+      }
+    }
+
     const request = new SIPMessage.OutgoingRequest(
       JsSIP_C.REGISTER, this._registrar, this._ua, {
-        'to_uri'  : this._to_uri,
-        'call_id' : this._call_id,
-        'cseq'    : (this._cseq += 1)
+        'to_uri'   : this._to_uri,
+        'call_id'  : this._call_id,
+        'cseq'     : (this._cseq += 1),
+        'from_tag' : fromTag
       }, extraHeaders);
 
     const request_sender = new RequestSender(this._ua, request, {
@@ -18643,7 +19079,7 @@ ${this._contact};expires=${this._expires}${this._extraContactParams}`);
 
             if (!response.hasHeader('Contact'))
             {
-              debug('no Contact header in response to REGISTER, response ignored');
+              logger.debug('no Contact header in response to REGISTER, response ignored');
 
               break;
             }
@@ -18652,13 +19088,23 @@ ${this._contact};expires=${this._expires}${this._extraContactParams}`);
               .reduce((a, b) => a.concat(b.parsed), []);
 
             // Get the Contact pointing to us and update the expires value accordingly.
-            const contact = contacts.find((element) => (
-              element.uri.user === this._ua.contact.uri.user
+            // Try to find a matching Contact using sip.instance and reg-id.
+            let contact = contacts.find((element) => (
+              (this._sipInstance === element.getParam('+sip.instance')) &&
+              (this._reg_id === parseInt(element.getParam('reg-id')))
             ));
+
+            // If no match was found using the sip.instance try comparing the URIs.
+            if (!contact)
+            {
+              contact = contacts.find((element) => (
+                (element.uri.user === this._ua.contact.uri.user)
+              ));
+            }
 
             if (!contact)
             {
-              debug('no Contact header pointing to us, response ignored');
+              logger.debug('no Contact header pointing to us, response ignored');
 
               break;
             }
@@ -18737,7 +19183,7 @@ ${this._contact};expires=${this._expires}${this._extraContactParams}`);
             }
             else
             { // This response MUST contain a Min-Expires header field.
-              debug('423 response received for REGISTER without Min-Expires');
+              logger.debug('423 response received for REGISTER without Min-Expires');
 
               this._registrationFailure(response, JsSIP_C.causes.SIP_FAILURE_CODE);
             }
@@ -18763,7 +19209,7 @@ ${this._contact};expires=${this._expires}${this._extraContactParams}`);
   {
     if (!this._registered)
     {
-      debug('already unregistered');
+      logger.debug('already unregistered');
 
       return;
     }
@@ -18888,11 +19334,13 @@ ${this._contact};expires=${this._expires}${this._extraContactParams}`);
   }
 };
 
-},{"./Constants":2,"./RequestSender":18,"./SIPMessage":19,"./Utils":26,"debug":30}],18:[function(require,module,exports){
+},{"./Constants":2,"./Logger":9,"./RequestSender":20,"./SIPMessage":21,"./Utils":28}],20:[function(require,module,exports){
+const Logger = require('./Logger');
 const JsSIP_C = require('./Constants');
 const DigestAuthentication = require('./DigestAuthentication');
 const Transactions = require('./Transactions');
-const debug = require('debug')('JsSIP:RequestSender');
+
+const logger = new Logger('RequestSender');
 
 // Default event handlers.
 const EventHandlers = {
@@ -19001,7 +19449,7 @@ module.exports = class RequestSender
       // Verify it seems a valid challenge.
       if (!challenge)
       {
-        debug(`${response.status_code} with wrong or missing challenge, cannot authenticate`);
+        logger.debug(`${response.status_code} with wrong or missing challenge, cannot authenticate`);
         this._eventHandlers.onReceiveResponse(response);
 
         return;
@@ -19057,13 +19505,15 @@ module.exports = class RequestSender
   }
 };
 
-},{"./Constants":2,"./DigestAuthentication":5,"./Transactions":22,"debug":30}],19:[function(require,module,exports){
+},{"./Constants":2,"./DigestAuthentication":5,"./Logger":9,"./Transactions":24}],21:[function(require,module,exports){
 const sdp_transform = require('sdp-transform');
+const Logger = require('./Logger');
 const JsSIP_C = require('./Constants');
 const Utils = require('./Utils');
 const NameAddrHeader = require('./NameAddrHeader');
 const Grammar = require('./Grammar');
-const debug = require('debug')('JsSIP:SIPMessage');
+
+const logger = new Logger('SIPMessage');
 
 /**
  * -param {String} method request method
@@ -19093,6 +19543,11 @@ class OutgoingRequest
     this.ruri = ruri;
     this.body = body;
     this.extraHeaders = Utils.cloneArray(extraHeaders);
+
+    if (this.ua.configuration.extra_headers)
+    {
+      this.extraHeaders = this.extraHeaders.concat(this.ua.configuration.extra_headers);
+    }
 
     // Fill the Common SIP Request Headers.
 
@@ -19521,13 +19976,13 @@ class IncomingMessage
 
     if (!this.headers[name])
     {
-      debug(`header "${name}" not present`);
+      logger.debug(`header "${name}" not present`);
 
       return;
     }
     else if (idx >= this.headers[name].length)
     {
-      debug(`not so many "${name}" headers present`);
+      logger.debug(`not so many "${name}" headers present`);
 
       return;
     }
@@ -19546,7 +20001,7 @@ class IncomingMessage
     if (parsed === -1)
     {
       this.headers[name].splice(idx, 1); // delete from headers
-      debug(`error parsing "${name}" header field with value "${value}"`);
+      logger.debug(`error parsing "${name}" header field with value "${value}"`);
 
       return;
     }
@@ -19654,6 +20109,11 @@ class IncomingRequest extends IncomingMessage
 
     reason = reason || JsSIP_C.REASON_PHRASE[code] || '';
     extraHeaders = Utils.cloneArray(extraHeaders);
+
+    if (this.ua.configuration.extra_headers)
+    {
+      extraHeaders = extraHeaders.concat(this.ua.configuration.extra_headers);
+    }
 
     let response = `SIP/2.0 ${code} ${reason}\r\n`;
 
@@ -19797,6 +20257,15 @@ class IncomingRequest extends IncomingMessage
     response += `From: ${this.getHeader('From')}\r\n`;
     response += `Call-ID: ${this.call_id}\r\n`;
     response += `CSeq: ${this.cseq} ${this.method}\r\n`;
+
+    if (this.ua.configuration.extra_headers)
+    {
+      for (const header of this.ua.configuration.extra_headers)
+      {
+        response += `${header.trim()}\r\n`;
+      }
+    }
+
     response += `Content-Length: ${0}\r\n\r\n`;
 
     this.transport.send(response);
@@ -19822,12 +20291,12 @@ module.exports = {
   IncomingResponse
 };
 
-},{"./Constants":2,"./Grammar":7,"./NameAddrHeader":10,"./Utils":26,"debug":30,"sdp-transform":35}],20:[function(require,module,exports){
+},{"./Constants":2,"./Grammar":7,"./Logger":9,"./NameAddrHeader":11,"./Utils":28,"sdp-transform":37}],22:[function(require,module,exports){
+const Logger = require('./Logger');
 const Utils = require('./Utils');
 const Grammar = require('./Grammar');
-const debugerror = require('debug')('JsSIP:ERROR:Socket');
 
-debugerror.log = console.warn.bind(console);
+const logger = new Logger('Socket');
 
 /**
  * Interface documentation: https://jssip.net/documentation/$last_version/api/socket/
@@ -19858,7 +20327,7 @@ exports.isSocket = (socket) =>
 
   if (typeof socket === 'undefined')
   {
-    debugerror('undefined JsSIP.Socket instance');
+    logger.warn('undefined JsSIP.Socket instance');
 
     return false;
   }
@@ -19868,20 +20337,20 @@ exports.isSocket = (socket) =>
   {
     if (!Utils.isString(socket.url))
     {
-      debugerror('missing or invalid JsSIP.Socket url property');
-      throw new Error();
+      logger.warn('missing or invalid JsSIP.Socket url property');
+      throw new Error('Missing or invalid JsSIP.Socket url property');
     }
 
     if (!Utils.isString(socket.via_transport))
     {
-      debugerror('missing or invalid JsSIP.Socket via_transport property');
-      throw new Error();
+      logger.warn('missing or invalid JsSIP.Socket via_transport property');
+      throw new Error('Missing or invalid JsSIP.Socket via_transport property');
     }
 
     if (Grammar.parse(socket.sip_uri, 'SIP_URI') === -1)
     {
-      debugerror('missing or invalid JsSIP.Socket sip_uri property');
-      throw new Error();
+      logger.warn('missing or invalid JsSIP.Socket sip_uri property');
+      throw new Error('missing or invalid JsSIP.Socket sip_uri property');
     }
   }
   catch (e)
@@ -19896,8 +20365,8 @@ exports.isSocket = (socket) =>
     {
       if (!Utils.isFunction(socket[method]))
       {
-        debugerror(`missing or invalid JsSIP.Socket method: ${method}`);
-        throw new Error();
+        logger.warn(`missing or invalid JsSIP.Socket method: ${method}`);
+        throw new Error(`Missing or invalid JsSIP.Socket method: ${method}`);
       }
     });
   }
@@ -19909,7 +20378,7 @@ exports.isSocket = (socket) =>
   return true;
 };
 
-},{"./Grammar":7,"./Utils":26,"debug":30}],21:[function(require,module,exports){
+},{"./Grammar":7,"./Logger":9,"./Utils":28}],23:[function(require,module,exports){
 const T1 = 500, T2 = 4000, T4 = 5000;
 
 module.exports = {
@@ -19928,16 +20397,18 @@ module.exports = {
   PROVISIONAL_RESPONSE_INTERVAL : 60000 // See RFC 3261 Section 13.3.1.1
 };
 
-},{}],22:[function(require,module,exports){
+},{}],24:[function(require,module,exports){
 const EventEmitter = require('events').EventEmitter;
+const Logger = require('./Logger');
 const JsSIP_C = require('./Constants');
 const SIPMessage = require('./SIPMessage');
 const Timers = require('./Timers');
-const debugnict = require('debug')('JsSIP:NonInviteClientTransaction');
-const debugict = require('debug')('JsSIP:InviteClientTransaction');
-const debugact = require('debug')('JsSIP:AckClientTransaction');
-const debugnist = require('debug')('JsSIP:NonInviteServerTransaction');
-const debugist = require('debug')('JsSIP:InviteServerTransaction');
+
+const loggernict = new Logger('NonInviteClientTransaction');
+const loggerict = new Logger('InviteClientTransaction');
+const loggeract = new Logger('AckClientTransaction');
+const loggernist = new Logger('NonInviteServerTransaction');
+const loggerist = new Logger('InviteServerTransaction');
 
 const C = {
   // Transaction states.
@@ -20002,7 +20473,7 @@ class NonInviteClientTransaction extends EventEmitter
 
   onTransportError()
   {
-    debugnict(`transport error occurred, deleting transaction ${this.id}`);
+    loggernict.debug(`transport error occurred, deleting transaction ${this.id}`);
     clearTimeout(this.F);
     clearTimeout(this.K);
     this.stateChanged(C.STATUS_TERMINATED);
@@ -20012,7 +20483,7 @@ class NonInviteClientTransaction extends EventEmitter
 
   timer_F()
   {
-    debugnict(`Timer F expired for transaction ${this.id}`);
+    loggernict.debug(`Timer F expired for transaction ${this.id}`);
     this.stateChanged(C.STATUS_TERMINATED);
     this.ua.destroyTransaction(this);
     this.eventHandlers.onRequestTimeout();
@@ -20122,7 +20593,7 @@ class InviteClientTransaction extends EventEmitter
 
     if (this.state !== C.STATUS_ACCEPTED)
     {
-      debugict(`transport error occurred, deleting transaction ${this.id}`);
+      loggerict.debug(`transport error occurred, deleting transaction ${this.id}`);
       this.eventHandlers.onTransportError();
     }
 
@@ -20133,7 +20604,7 @@ class InviteClientTransaction extends EventEmitter
   // RFC 6026 7.2.
   timer_M()
   {
-    debugict(`Timer M expired for transaction ${this.id}`);
+    loggerict.debug(`Timer M expired for transaction ${this.id}`);
 
     if (this.state === C.STATUS_ACCEPTED)
     {
@@ -20146,7 +20617,7 @@ class InviteClientTransaction extends EventEmitter
   // RFC 3261 17.1.1.
   timer_B()
   {
-    debugict(`Timer B expired for transaction ${this.id}`);
+    loggerict.debug(`Timer B expired for transaction ${this.id}`);
     if (this.state === C.STATUS_CALLING)
     {
       this.stateChanged(C.STATUS_TERMINATED);
@@ -20157,7 +20628,7 @@ class InviteClientTransaction extends EventEmitter
 
   timer_D()
   {
-    debugict(`Timer D expired for transaction ${this.id}`);
+    loggerict.debug(`Timer D expired for transaction ${this.id}`);
     clearTimeout(this.B);
     this.stateChanged(C.STATUS_TERMINATED);
     this.ua.destroyTransaction(this);
@@ -20294,7 +20765,7 @@ class AckClientTransaction extends EventEmitter
 
   onTransportError()
   {
-    debugact(`transport error occurred for transaction ${this.id}`);
+    loggeract.debug(`transport error occurred for transaction ${this.id}`);
     this.eventHandlers.onTransportError();
   }
 }
@@ -20331,7 +20802,7 @@ class NonInviteServerTransaction extends EventEmitter
 
   timer_J()
   {
-    debugnist(`Timer J expired for transaction ${this.id}`);
+    loggernist.debug(`Timer J expired for transaction ${this.id}`);
     this.stateChanged(C.STATUS_TERMINATED);
     this.ua.destroyTransaction(this);
   }
@@ -20342,7 +20813,7 @@ class NonInviteServerTransaction extends EventEmitter
     {
       this.transportError = true;
 
-      debugnist(`transport error occurred, deleting transaction ${this.id}`);
+      loggernist.debug(`transport error occurred, deleting transaction ${this.id}`);
 
       clearTimeout(this.J);
       this.stateChanged(C.STATUS_TERMINATED);
@@ -20453,11 +20924,11 @@ class InviteServerTransaction extends EventEmitter
 
   timer_H()
   {
-    debugist(`Timer H expired for transaction ${this.id}`);
+    loggerist.debug(`Timer H expired for transaction ${this.id}`);
 
     if (this.state === C.STATUS_COMPLETED)
     {
-      debugist('ACK not received, dialog will be terminated');
+      loggerist.debug('ACK not received, dialog will be terminated');
     }
 
     this.stateChanged(C.STATUS_TERMINATED);
@@ -20473,7 +20944,7 @@ class InviteServerTransaction extends EventEmitter
   // RFC 6026 7.1.
   timer_L()
   {
-    debugist(`Timer L expired for transaction ${this.id}`);
+    loggerist.debug(`Timer L expired for transaction ${this.id}`);
 
     if (this.state === C.STATUS_ACCEPTED)
     {
@@ -20488,7 +20959,7 @@ class InviteServerTransaction extends EventEmitter
     {
       this.transportError = true;
 
-      debugist(`transport error occurred, deleting transaction ${this.id}`);
+      loggerist.debug(`transport error occurred, deleting transaction ${this.id}`);
 
       if (this.resendProvisionalTimer !== null)
       {
@@ -20733,13 +21204,12 @@ module.exports = {
   checkTransaction
 };
 
-},{"./Constants":2,"./SIPMessage":19,"./Timers":21,"debug":30,"events":29}],23:[function(require,module,exports){
+},{"./Constants":2,"./Logger":9,"./SIPMessage":21,"./Timers":23,"events":31}],25:[function(require,module,exports){
+const Logger = require('./Logger');
 const Socket = require('./Socket');
-const debug = require('debug')('JsSIP:Transport');
-const debugerror = require('debug')('JsSIP:ERROR:Transport');
 const JsSIP_C = require('./Constants');
 
-debugerror.log = console.warn.bind(console);
+const logger = new Logger('Transport');
 
 /**
  * Constants
@@ -20773,7 +21243,7 @@ module.exports = class Transport
 {
   constructor(sockets, recovery_options = C.recovery_options)
   {
-    debug('new()');
+    logger.debug('new()');
 
     this.status = C.STATUS_DISCONNECTED;
 
@@ -20797,7 +21267,7 @@ module.exports = class Transport
     }
     catch (error)
     {
-      debugerror(`cannot use TextDecoder: ${error}`);
+      logger.warn(`cannot use TextDecoder: ${error}`);
     }
 
     if (typeof sockets === 'undefined')
@@ -20857,17 +21327,17 @@ module.exports = class Transport
 
   connect()
   {
-    debug('connect()');
+    logger.debug('connect()');
 
     if (this.isConnected())
     {
-      debug('Transport is already connected');
+      logger.debug('Transport is already connected');
 
       return;
     }
     else if (this.isConnecting())
     {
-      debug('Transport is connecting');
+      logger.debug('Transport is connecting');
 
       return;
     }
@@ -20891,7 +21361,7 @@ module.exports = class Transport
 
   disconnect()
   {
-    debug('close()');
+    logger.debug('close()');
 
     this.close_requested = true;
     this.recover_attempts = 0;
@@ -20918,18 +21388,18 @@ module.exports = class Transport
 
   send(data)
   {
-    debug('send()');
+    logger.debug('send()');
 
     if (!this.isConnected())
     {
-      debugerror('unable to send message, transport is not connected');
+      logger.warn('unable to send message, transport is not connected');
 
       return false;
     }
 
     const message = data.toString();
 
-    debug(`sending message:\n\n${message}\n`);
+    logger.debug(`sending message:\n\n${message}\n`);
 
     return this.socket.send(message);
   }
@@ -20964,7 +21434,7 @@ module.exports = class Transport
       k = this.recovery_options.max_interval;
     }
 
-    debug(`reconnection attempt: ${this.recover_attempts}. next connection attempt in ${k} seconds`);
+    logger.debug(`reconnection attempt: ${this.recover_attempts}. next connection attempt in ${k} seconds`);
 
     this.recovery_timer = setTimeout(() =>
     {
@@ -21077,10 +21547,28 @@ module.exports = class Transport
 
   _onData(data)
   {
-    // CRLF Keep Alive response from server. Ignore it.
+    // CRLF Keep Alive request from server, reply.
+    if (data === '\r\n\r\n')
+    {
+      logger.debug('received message with double-CRLF Keep Alive request');
+
+      try
+      {
+        // Reply with single CRLF.
+        this.socket.send('\r\n');
+      }
+      catch (error)
+      {
+        logger.warn(`error sending Keep Alive response: ${error}`);
+      }
+
+      return;
+    }
+
+    // CRLF Keep Alive response from server, ignore it.
     if (data === '\r\n')
     {
-      debug('received message with CRLF Keep Alive response');
+      logger.debug('received message with CRLF Keep Alive response');
 
       return;
     }
@@ -21097,31 +21585,33 @@ module.exports = class Transport
       }
       catch (evt)
       {
-        debug('received binary message failed to be converted into string,' +
+        logger.debug('received binary message failed to be converted into string,' +
               ' message discarded');
 
         return;
       }
 
-      debug(`received binary message:\n\n${data}\n`);
+      logger.debug(`received binary message:\n\n${data}\n`);
     }
 
     // Text message.
     else
     {
-      debug(`received text message:\n\n${data}\n`);
+      logger.debug(`received text message:\n\n${data}\n`);
     }
 
     this.ondata({ transport: this, message: data });
   }
 };
 
-},{"./Constants":2,"./Socket":20,"debug":30}],24:[function(require,module,exports){
+},{"./Constants":2,"./Logger":9,"./Socket":22}],26:[function(require,module,exports){
 const EventEmitter = require('events').EventEmitter;
+const Logger = require('./Logger');
 const JsSIP_C = require('./Constants');
 const Registrator = require('./Registrator');
 const RTCSession = require('./RTCSession');
 const Message = require('./Message');
+const Options = require('./Options');
 const Transactions = require('./Transactions');
 const Transport = require('./Transport');
 const Utils = require('./Utils');
@@ -21131,10 +21621,8 @@ const Parser = require('./Parser');
 const SIPMessage = require('./SIPMessage');
 const sanityCheck = require('./sanityCheck');
 const config = require('./Config');
-const debug = require('debug')('JsSIP:UA');
-const debugerror = require('debug')('JsSIP:ERROR:UA');
 
-debugerror.log = console.warn.bind(console);
+const logger = new Logger('UA');
 
 const C = {
   // UA status codes.
@@ -21165,7 +21653,7 @@ module.exports = class UA extends EventEmitter
 
   constructor(configuration)
   {
-    debug('new() [configuration:%o]', configuration);
+    logger.debug('new() [configuration:%o]', configuration);
 
     super();
 
@@ -21177,7 +21665,7 @@ module.exports = class UA extends EventEmitter
     this._dynConfiguration = {};
     this._dialogs = {};
 
-    // User actions outside any session/dialog (MESSAGE).
+    // User actions outside any session/dialog (MESSAGE/OPTIONS).
     this._applicants = {};
 
     this._sessions = {};
@@ -21254,7 +21742,7 @@ module.exports = class UA extends EventEmitter
    */
   start()
   {
-    debug('start()');
+    logger.debug('start()');
 
     if (this._status === C.STATUS_INIT)
     {
@@ -21262,7 +21750,7 @@ module.exports = class UA extends EventEmitter
     }
     else if (this._status === C.STATUS_USER_CLOSED)
     {
-      debug('restarting UA');
+      logger.debug('restarting UA');
 
       // Disconnect.
       if (this._closeTimer !== null)
@@ -21278,11 +21766,11 @@ module.exports = class UA extends EventEmitter
     }
     else if (this._status === C.STATUS_READY)
     {
-      debug('UA is in READY status, not restarted');
+      logger.debug('UA is in READY status, not restarted');
     }
     else
     {
-      debug('ERROR: connection is down, Auto-Recovery system is trying to reconnect');
+      logger.debug('ERROR: connection is down, Auto-Recovery system is trying to reconnect');
     }
 
     // Set dynamic configuration.
@@ -21294,7 +21782,7 @@ module.exports = class UA extends EventEmitter
    */
   register()
   {
-    debug('register()');
+    logger.debug('register()');
 
     this._dynConfiguration.register = true;
     this._registrator.register();
@@ -21305,7 +21793,7 @@ module.exports = class UA extends EventEmitter
    */
   unregister(options)
   {
-    debug('unregister()');
+    logger.debug('unregister()');
 
     this._dynConfiguration.register = false;
     this._registrator.unregister(options);
@@ -21346,7 +21834,7 @@ module.exports = class UA extends EventEmitter
    */
   call(target, options)
   {
-    debug('call()');
+    logger.debug('call()');
 
     const session = new RTCSession(this);
 
@@ -21367,9 +21855,30 @@ module.exports = class UA extends EventEmitter
    */
   sendMessage(target, body, options)
   {
-    debug('sendMessage()');
+    logger.debug('sendMessage()');
 
     const message = new Message(this);
+
+    message.send(target, body, options);
+
+    return message;
+  }
+
+  /**
+   * Send a SIP OPTIONS.
+   *
+   * -param {String} target
+   * -param {String} [body]
+   * -param {Object} [options]
+   *
+   * -throws {TypeError}
+   *
+   */
+  sendOptions(target, body, options)
+  {
+    logger.debug('sendOptions()');
+
+    const message = new Options(this);
 
     message.send(target, body, options);
 
@@ -21381,7 +21890,7 @@ module.exports = class UA extends EventEmitter
    */
   terminateSessions(options)
   {
-    debug('terminateSessions()');
+    logger.debug('terminateSessions()');
 
     for (const idx in this._sessions)
     {
@@ -21398,14 +21907,14 @@ module.exports = class UA extends EventEmitter
    */
   stop()
   {
-    debug('stop()');
+    logger.debug('stop()');
 
     // Remove dynamic settings.
     this._dynConfiguration = {};
 
     if (this._status === C.STATUS_USER_CLOSED)
     {
-      debug('UA already closed');
+      logger.debug('UA already closed');
 
       return;
     }
@@ -21421,7 +21930,7 @@ module.exports = class UA extends EventEmitter
     {
       if (Object.prototype.hasOwnProperty.call(this._sessions, session))
       {
-        debug(`closing session ${session}`);
+        logger.debug(`closing session ${session}`);
         try { this._sessions[session].terminate(); }
         catch (error) {}
       }
@@ -21487,7 +21996,7 @@ module.exports = class UA extends EventEmitter
         return this._configuration.authorization_jwt;
 
       default:
-        debugerror('get() | cannot get "%s" parameter in runtime', parameter);
+        logger.warn('get() | cannot get "%s" parameter in runtime', parameter);
 
         return undefined;
     }
@@ -21533,8 +22042,13 @@ module.exports = class UA extends EventEmitter
         break;
       }
 
+      case 'extra_headers': {
+        this._configuration.extra_headers = value;
+        break;
+      }
+
       default:
-        debugerror('set() | cannot set "%s" parameter in runtime', parameter);
+        logger.warn('set() | cannot set "%s" parameter in runtime', parameter);
 
         return false;
     }
@@ -21591,6 +22105,15 @@ module.exports = class UA extends EventEmitter
   {
     this._applicants[message] = message;
     this.emit('newMessage', data);
+  }
+
+  /**
+   *  new Options
+   */
+  newOptions(message, data)
+  {
+    this._applicants[message] = message;
+    this.emit('newOptions', data);
   }
 
   /**
@@ -21657,7 +22180,7 @@ module.exports = class UA extends EventEmitter
     if (request.ruri.user !== this._configuration.uri.user &&
         request.ruri.user !== this._contact.uri.user)
     {
-      debug('Request-URI does not point to us');
+      logger.debug('Request-URI does not point to us');
       if (request.method !== JsSIP_C.ACK)
       {
         request.reply_sl(404);
@@ -21701,7 +22224,16 @@ module.exports = class UA extends EventEmitter
      */
     if (method === JsSIP_C.OPTIONS)
     {
-      request.reply(200);
+      if (this.listeners('newOptions').length === 0)
+      {
+        request.reply(200);
+
+        return;
+      }
+
+      const message = new Options(this);
+
+      message.init_incoming(request);
     }
     else if (method === JsSIP_C.MESSAGE)
     {
@@ -21768,7 +22300,7 @@ module.exports = class UA extends EventEmitter
           }
           else
           {
-            debugerror('INVITE received but WebRTC is not supported');
+            logger.warn('INVITE received but WebRTC is not supported');
             request.reply(488);
           }
           break;
@@ -21784,7 +22316,7 @@ module.exports = class UA extends EventEmitter
           }
           else
           {
-            debug('received CANCEL request for a non existent session');
+            logger.debug('received CANCEL request for a non existent session');
           }
           break;
         case JsSIP_C.ACK:
@@ -21824,7 +22356,7 @@ module.exports = class UA extends EventEmitter
         }
         else
         {
-          debug('received NOTIFY request for a non existent subscription');
+          logger.debug('received NOTIFY request for a non existent subscription');
           request.reply(481, 'Subscription does not exist');
         }
       }
@@ -21949,7 +22481,7 @@ module.exports = class UA extends EventEmitter
     }
     catch (e)
     {
-      debugerror(e);
+      logger.warn(e);
       throw new Exceptions.ConfigurationError('sockets', this._configuration.sockets);
     }
 
@@ -22022,7 +22554,7 @@ module.exports = class UA extends EventEmitter
 
     // Seal the configuration.
     const writable_parameters = [
-      'authorization_user', 'password', 'realm', 'ha1', 'authorization_jwt', 'display_name', 'register'
+      'authorization_user', 'password', 'realm', 'ha1', 'authorization_jwt', 'display_name', 'register', 'extra_headers'
     ];
 
     for (const parameter in this._configuration)
@@ -22046,7 +22578,7 @@ module.exports = class UA extends EventEmitter
       }
     }
 
-    debug('configuration parameters after validation:');
+    logger.debug('configuration parameters after validation:');
     for (const parameter in this._configuration)
     {
       // Only show the user user configurable parameters.
@@ -22056,15 +22588,15 @@ module.exports = class UA extends EventEmitter
         {
           case 'uri':
           case 'registrar_server':
-            debug(`- ${parameter}: ${this._configuration[parameter]}`);
+            logger.debug(`- ${parameter}: ${this._configuration[parameter]}`);
             break;
           case 'password':
           case 'ha1':
           case 'authorization_jwt':
-            debug(`- ${parameter}: NOT SHOWN`);
+            logger.debug(`- ${parameter}: NOT SHOWN`);
             break;
           default:
-            debug(`- ${parameter}: ${JSON.stringify(this._configuration[parameter])}`);
+            logger.debug(`- ${parameter}: ${JSON.stringify(this._configuration[parameter])}`);
         }
       }
     }
@@ -22193,7 +22725,7 @@ function onTransportData(data)
   }
 }
 
-},{"./Config":1,"./Constants":2,"./Exceptions":6,"./Message":9,"./Parser":11,"./RTCSession":12,"./Registrator":17,"./SIPMessage":19,"./Transactions":22,"./Transport":23,"./URI":25,"./Utils":26,"./sanityCheck":28,"debug":30,"events":29}],25:[function(require,module,exports){
+},{"./Config":1,"./Constants":2,"./Exceptions":6,"./Logger":9,"./Message":10,"./Options":12,"./Parser":13,"./RTCSession":14,"./Registrator":19,"./SIPMessage":21,"./Transactions":24,"./Transport":25,"./URI":27,"./Utils":28,"./sanityCheck":30,"events":31}],27:[function(require,module,exports){
 const JsSIP_C = require('./Constants');
 const Utils = require('./Utils');
 const Grammar = require('./Grammar');
@@ -22459,7 +22991,7 @@ module.exports = class URI
   }
 };
 
-},{"./Constants":2,"./Grammar":7,"./Utils":26}],26:[function(require,module,exports){
+},{"./Constants":2,"./Grammar":7,"./Utils":28}],28:[function(require,module,exports){
 const JsSIP_C = require('./Constants');
 const URI = require('./URI');
 const Grammar = require('./Grammar');
@@ -22839,7 +23371,6 @@ exports.calculateMD5 = (string) =>
 
   function utf8Encode(str)
   {
-    str = str.replace(/\r\n/g, '\n');
     let utftext = '';
 
     for (let n = 0; n < str.length; n++)
@@ -23013,18 +23544,17 @@ exports.cloneObject = (obj, fallback = {}) =>
   return (obj && Object.assign({}, obj)) || fallback;
 };
 
-},{"./Constants":2,"./Grammar":7,"./URI":25}],27:[function(require,module,exports){
+},{"./Constants":2,"./Grammar":7,"./URI":27}],29:[function(require,module,exports){
+const Logger = require('./Logger');
 const Grammar = require('./Grammar');
-const debug = require('debug')('JsSIP:WebSocketInterface');
-const debugerror = require('debug')('JsSIP:ERROR:WebSocketInterface');
 
-debugerror.log = console.warn.bind(console);
+const logger = new Logger('WebSocketInterface');
 
 module.exports = class WebSocketInterface
 {
   constructor(url)
   {
-    debug('new() [url:"%s"]', url);
+    logger.debug('new() [url:"%s"]', url);
 
     this._url = url;
     this._sip_uri = null;
@@ -23035,12 +23565,12 @@ module.exports = class WebSocketInterface
 
     if (parsed_url === -1)
     {
-      debugerror(`invalid WebSocket URI: ${url}`);
+      logger.warn(`invalid WebSocket URI: ${url}`);
       throw new TypeError(`Invalid argument: ${url}`);
     }
     else if (parsed_url.scheme !== 'wss' && parsed_url.scheme !== 'ws')
     {
-      debugerror(`invalid WebSocket URI scheme: ${parsed_url.scheme}`);
+      logger.warn(`invalid WebSocket URI scheme: ${parsed_url.scheme}`);
       throw new TypeError(`Invalid argument: ${url}`);
     }
     else
@@ -23072,17 +23602,17 @@ module.exports = class WebSocketInterface
 
   connect()
   {
-    debug('connect()');
+    logger.debug('connect()');
 
     if (this.isConnected())
     {
-      debug(`WebSocket ${this._url} is already connected`);
+      logger.debug(`WebSocket ${this._url} is already connected`);
 
       return;
     }
     else if (this.isConnecting())
     {
-      debug(`WebSocket ${this._url} is connecting`);
+      logger.debug(`WebSocket ${this._url} is connecting`);
 
       return;
     }
@@ -23092,7 +23622,7 @@ module.exports = class WebSocketInterface
       this.disconnect();
     }
 
-    debug(`connecting to WebSocket ${this._url}`);
+    logger.debug(`connecting to WebSocket ${this._url}`);
 
     try
     {
@@ -23113,7 +23643,7 @@ module.exports = class WebSocketInterface
 
   disconnect()
   {
-    debug('disconnect()');
+    logger.debug('disconnect()');
 
     if (this._ws)
     {
@@ -23130,7 +23660,7 @@ module.exports = class WebSocketInterface
 
   send(message)
   {
-    debug('send()');
+    logger.debug('send()');
 
     if (this.isConnected())
     {
@@ -23140,7 +23670,7 @@ module.exports = class WebSocketInterface
     }
     else
     {
-      debugerror('unable to send message, WebSocket is not open');
+      logger.warn('unable to send message, WebSocket is not open');
 
       return false;
     }
@@ -23163,48 +23693,43 @@ module.exports = class WebSocketInterface
 
   _onOpen()
   {
-    debug(`WebSocket ${this._url} connected`);
+    logger.debug(`WebSocket ${this._url} connected`);
 
     this.onconnect();
   }
 
   _onClose({ wasClean, code, reason })
   {
-    debug(`WebSocket ${this._url} closed`);
+    logger.debug(`WebSocket ${this._url} closed`);
 
     if (wasClean === false)
     {
-      debug('WebSocket abrupt disconnection');
+      logger.debug('WebSocket abrupt disconnection');
     }
 
-    const data = {
-      socket : this,
-      error  : !wasClean,
-      code,
-      reason
-    };
-
-    this.ondisconnect(data);
+    this.ondisconnect(!wasClean, code, reason);
   }
 
   _onMessage({ data })
   {
-    debug('received WebSocket message');
+    logger.debug('received WebSocket message');
 
     this.ondata(data);
   }
 
   _onError(e)
   {
-    debugerror(`WebSocket ${this._url} error: ${e}`);
+    logger.warn(`WebSocket ${this._url} error: `, e);
   }
 };
 
-},{"./Grammar":7,"debug":30}],28:[function(require,module,exports){
+},{"./Grammar":7,"./Logger":9}],30:[function(require,module,exports){
+const Logger = require('./Logger');
 const JsSIP_C = require('./Constants');
 const SIPMessage = require('./SIPMessage');
 const Utils = require('./Utils');
-const debug = require('debug')('JsSIP:sanityCheck');
+
+const logger = new Logger('sanityCheck');
 
 // Checks for requests and responses.
 const all = [ minimumHeaders ];
@@ -23405,7 +23930,7 @@ function rfc3261_8_1_3_3()
 {
   if (message.getHeaders('via').length > 1)
   {
-    debug('more than one Via header field present in the response, dropping the response');
+    logger.debug('more than one Via header field present in the response, dropping the response');
 
     return false;
   }
@@ -23417,7 +23942,7 @@ function rfc3261_18_3_response()
 
   if (len < contentLength)
   {
-    debug('message body length is lower than the value in Content-Length header field, dropping the response');
+    logger.debug('message body length is lower than the value in Content-Length header field, dropping the response');
 
     return false;
   }
@@ -23432,7 +23957,7 @@ function minimumHeaders()
   {
     if (!message.hasHeader(header))
     {
-      debug(`missing mandatory header field : ${header}, dropping the response`);
+      logger.debug(`missing mandatory header field : ${header}, dropping the response`);
 
       return false;
     }
@@ -23468,7 +23993,7 @@ function reply(status_code)
   transport.send(response);
 }
 
-},{"./Constants":2,"./SIPMessage":19,"./Utils":26,"debug":30}],29:[function(require,module,exports){
+},{"./Constants":2,"./Logger":9,"./SIPMessage":21,"./Utils":28}],31:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -23993,7 +24518,7 @@ function functionBindPolyfill(context) {
   };
 }
 
-},{}],30:[function(require,module,exports){
+},{}],32:[function(require,module,exports){
 (function (process){(function (){
 /* eslint-env browser */
 
@@ -24266,7 +24791,7 @@ formatters.j = function (v) {
 };
 
 }).call(this)}).call(this,require('_process'))
-},{"./common":31,"_process":33}],31:[function(require,module,exports){
+},{"./common":33,"_process":35}],33:[function(require,module,exports){
 
 /**
  * This is the common logic for both the Node.js and web browser
@@ -24303,7 +24828,7 @@ function setup(env) {
 
 	/**
 	* Selects a color for a debug namespace
-	* @param {String} namespace The namespace string for the for the debug instance to be colored
+	* @param {String} namespace The namespace string for the debug instance to be colored
 	* @return {Number|String} An ANSI color code for the given namespace
 	* @api private
 	*/
@@ -24448,7 +24973,7 @@ function setup(env) {
 			namespaces = split[i].replace(/\*/g, '.*?');
 
 			if (namespaces[0] === '-') {
-				createDebug.skips.push(new RegExp('^' + namespaces.substr(1) + '$'));
+				createDebug.skips.push(new RegExp('^' + namespaces.slice(1) + '$'));
 			} else {
 				createDebug.names.push(new RegExp('^' + namespaces + '$'));
 			}
@@ -24542,7 +25067,7 @@ function setup(env) {
 
 module.exports = setup;
 
-},{"ms":32}],32:[function(require,module,exports){
+},{"ms":34}],34:[function(require,module,exports){
 /**
  * Helpers.
  */
@@ -24706,7 +25231,7 @@ function plural(ms, msAbs, n, name) {
   return Math.round(ms / n) + ' ' + name + (isPlural ? 's' : '');
 }
 
-},{}],33:[function(require,module,exports){
+},{}],35:[function(require,module,exports){
 // shim for using process in browser
 var process = module.exports = {};
 
@@ -24892,7 +25417,7 @@ process.chdir = function (dir) {
 };
 process.umask = function() { return 0; };
 
-},{}],34:[function(require,module,exports){
+},{}],36:[function(require,module,exports){
 var grammar = module.exports = {
   v: [{
     name: 'version',
@@ -25388,7 +25913,7 @@ Object.keys(grammar).forEach(function (key) {
   });
 });
 
-},{}],35:[function(require,module,exports){
+},{}],37:[function(require,module,exports){
 var parser = require('./parser');
 var writer = require('./writer');
 
@@ -25401,7 +25926,7 @@ exports.parseRemoteCandidates = parser.parseRemoteCandidates;
 exports.parseImageAttributes = parser.parseImageAttributes;
 exports.parseSimulcastStreamList = parser.parseSimulcastStreamList;
 
-},{"./parser":36,"./writer":37}],36:[function(require,module,exports){
+},{"./parser":38,"./writer":39}],38:[function(require,module,exports){
 var toIntIfInt = function (v) {
   return String(Number(v)) === v ? Number(v) : v;
 };
@@ -25527,7 +26052,7 @@ exports.parseSimulcastStreamList = function (str) {
   });
 };
 
-},{"./grammar":34}],37:[function(require,module,exports){
+},{"./grammar":36}],39:[function(require,module,exports){
 var grammar = require('./grammar');
 
 // customized util.format - discards excess arguments and can void middle ones
@@ -25643,12 +26168,12 @@ module.exports = function (session, opts) {
   return sdp.join('\r\n') + '\r\n';
 };
 
-},{"./grammar":34}],38:[function(require,module,exports){
+},{"./grammar":36}],40:[function(require,module,exports){
 module.exports={
   "name": "react-native-jssip",
   "title": "React Native JsSIP",
   "description": "React Native fork of the Javascript SIP library",
-  "version": "3.7.6",
+  "version": "3.10.1",
   "author": "Radu Vulpescu <radu.vulpescu@gmail.com> (https://github.com/rvulpescu)",
   "contributors": [
     "Iñaki Baz Castillo <ibc@aliax.net> (https://github.com/ibc)",
@@ -25671,17 +26196,16 @@ module.exports={
     "url": "git+https://github.com/rvulpescu/react-native-jssip.git"
   },
   "dependencies": {
-    "@types/debug": "^4.1.5",
-    "@types/node": "^14.14.34",
+    "@types/debug": "^4.1.7",
+    "@types/events": "^3.0.0",
     "debug": "^4.3.1",
     "events": "^3.3.0",
-    "react-native": "^0.63.3",
-    "react-native-webrtc": "^1.84.0",
+    "react-native": "^0.73.4",
     "sdp-transform": "^2.14.1"
   },
   "devDependencies": {
-    "@babel/core": "^7.13.10",
-    "@babel/preset-env": "^7.13.10",
+    "@babel/core": "^7.19.6",
+    "@babel/preset-env": "^7.19.4",
     "ansi-colors": "^3.2.4",
     "browserify": "^16.5.1",
     "eslint": "^5.16.0",
@@ -25700,14 +26224,11 @@ module.exports={
     "vinyl-source-stream": "^2.0.0"
   },
   "scripts": {
-    "lint": "gulp lint",
-    "test": "gulp test",
-    "prepublishOnly": "gulp babel"
-  },
-  "homepage": "https://github.com/rvulpescu/react-native-jssip#readme",
-  "directories": {
-    "lib": "lib",
-    "test": "test"
+    "lint": "node npm-scripts.js lint",
+    "test": "node npm-scripts.js test",
+    "prepublish": "node npm-scripts.js prepublish",
+    "build": "gulp",
+    "release": "node npm-scripts.js release"
   }
 }
 

@@ -2,7 +2,7 @@
   "name": "react-native-jssip",
   "title": "React Native JsSIP",
   "description": "React Native fork of the Javascript SIP library",
-  "version": "3.7.6",
+  "version": "3.10.2",
   "author": "Radu Vulpescu <radu.vulpescu@gmail.com> (https://github.com/rvulpescu)",
   "contributors": [
     "Iñaki Baz Castillo <ibc@aliax.net> (https://github.com/ibc)",
@@ -25,17 +25,16 @@
     "url": "git+https://github.com/rvulpescu/react-native-jssip.git"
   },
   "dependencies": {
-    "@types/debug": "^4.1.5",
-    "@types/node": "^14.14.34",
+    "@types/debug": "^4.1.7",
+    "@types/events": "^3.0.0",
     "debug": "^4.3.1",
     "events": "^3.3.0",
-    "react-native": "^0.63.3",
-    "react-native-webrtc": "^1.84.0",
+    "react-native": "^0.73.4",
     "sdp-transform": "^2.14.1"
   },
   "devDependencies": {
-    "@babel/core": "^7.13.10",
-    "@babel/preset-env": "^7.13.10",
+    "@babel/core": "^7.19.6",
+    "@babel/preset-env": "^7.19.4",
     "ansi-colors": "^3.2.4",
     "browserify": "^16.5.1",
     "eslint": "^5.16.0",
@@ -54,13 +53,10 @@
     "vinyl-source-stream": "^2.0.0"
   },
   "scripts": {
-    "lint": "gulp lint",
-    "test": "gulp test",
-    "prepublishOnly": "gulp babel"
-  },
-  "homepage": "https://github.com/rvulpescu/react-native-jssip#readme",
-  "directories": {
-    "lib": "lib",
-    "test": "test"
+    "lint": "node npm-scripts.js lint",
+    "test": "node npm-scripts.js test",
+    "prepublish": "node npm-scripts.js prepublish",
+    "build": "gulp",
+    "release": "node npm-scripts.js release"
   }
 }
